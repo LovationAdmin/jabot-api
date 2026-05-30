@@ -37,10 +37,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router, prefix="/auth", tags=["Authentification"])
-app.include_router(persons.router, prefix="/persons", tags=["Personnes"])
-app.include_router(tree.router, prefix="/tree", tags=["Arbre généalogique"])
-app.include_router(media.router, prefix="/media", tags=["Médias"])
+API_PREFIX = "/api"
+
+app.include_router(auth.router, prefix=f"{API_PREFIX}/auth", tags=["Authentification"])
+app.include_router(persons.router, prefix=f"{API_PREFIX}/persons", tags=["Personnes"])
+app.include_router(tree.router, prefix=f"{API_PREFIX}/tree", tags=["Arbre généalogique"])
+app.include_router(media.router, prefix=f"{API_PREFIX}/media", tags=["Médias"])
 
 
 @app.get("/", tags=["Health"])
