@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.person import Person, CanvasPosition
@@ -35,6 +36,7 @@ async def list_persons(
 
     result = await db.execute(
         select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
         .where(Person.deleted_at.is_(None))
         .order_by(Person.created_at.desc())
         .offset(skip)
@@ -69,7 +71,12 @@ async def create_person(
     db.add(canvas_pos)
 
     await db.commit()
-    await db.refresh(person)
+    result = await db.execute(
+        select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .where(Person.id == person.id)
+    )
+    person = result.scalar_one()
     return person
 
 
@@ -80,7 +87,9 @@ async def get_person(
 ):
     """Récupère le détail d'une personne."""
     result = await db.execute(
-        select(Person).where(Person.id == person_id, Person.deleted_at.is_(None))
+        select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .where(Person.id == person_id, Person.deleted_at.is_(None))
     )
     person = result.scalar_one_or_none()
     if person is None:
@@ -109,7 +118,12 @@ async def update_person(
     person.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
-    await db.refresh(person)
+    result = await db.execute(
+        select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .where(Person.id == person_id)
+    )
+    person = result.scalar_one()
     return person
 
 

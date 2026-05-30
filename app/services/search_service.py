@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Set, Tuple
 import jellyfish
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, or_
+from sqlalchemy.orm import selectinload
 
 from app.models.person import Person
 from app.models.relationship import Relationship
@@ -257,7 +258,9 @@ async def search_persons(
     # Only do full scan if trigram returned few results
     if len(candidate_ids) < 10 and req.name:
         all_persons_result = await db.execute(
-            select(Person).where(Person.deleted_at.is_(None)).limit(2000)
+            select(Person)
+            .options(selectinload(Person.canvas_position), selectinload(Person.media))
+            .where(Person.deleted_at.is_(None)).limit(2000)
         )
         all_persons = all_persons_result.scalars().all()
         for p in all_persons:
@@ -294,7 +297,9 @@ async def search_persons(
             pass
 
     persons_result = await db.execute(
-        select(Person).where(Person.id.in_(uuid_list), Person.deleted_at.is_(None))
+        select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .where(Person.id.in_(uuid_list), Person.deleted_at.is_(None))
     )
     persons = persons_result.scalars().all()
     person_map = {str(p.id): p for p in persons}
