@@ -3,7 +3,7 @@ services:
     name: jabot-api
     env: python
     region: frankfurt
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -43,10 +43,10 @@ services:
 databases:
   - name: jabot-db
     databaseName: jabot_db
-    plan: starter
+    plan: free
     region: frankfurt
     postgresMajorVersion: "16"
 
   - name: jabot-redis
-    plan: starter
+    plan: free
     region: frankfurt
