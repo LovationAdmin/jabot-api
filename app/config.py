@@ -10,8 +10,6 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def _normalize_db_url(cls, v: str) -> str:
-        # Render fournit l'URL au format sync (postgres:// ou postgresql://).
-        # On force le driver asyncpg utilisé par l'app et Alembic.
         if v.startswith("postgres://"):
             v = "postgresql://" + v[len("postgres://"):]
         if v.startswith("postgresql://"):
@@ -26,14 +24,12 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Vonage SMS (fournisseur principal, couverture mondiale)
+    # Vonage SMS (fournisseur principal - couverture mondiale)
     VONAGE_API_KEY: str = ""
     VONAGE_API_SECRET: str = ""
-    # Nom d'expéditeur (alphanumérique, max 11 car.). Certains pays (US, etc.)
-    # ignorent l'alphanumérique et exigent un numéro virtuel Vonage.
-    VONAGE_BRAND_NAME: str = "JABOT"
+    VONAGE_BRAND_NAME: str = "JabotAI"
 
-    # Africa's Talking SMS (fournisseur de repli, Afrique)
+    # Africa's Talking SMS (fournisseur de secours)
     AFRICAS_TALKING_API_KEY: str = ""
     AFRICAS_TALKING_USERNAME: str = "sandbox"
     AFRICAS_TALKING_SENDER_ID: str = "JABOT"

@@ -1,3 +1,5 @@
+import uuid
+from typing import Optional
 from pydantic import BaseModel, field_validator
 import re
 
@@ -13,7 +15,7 @@ class OTPRequest(BaseModel):
         if not phone.startswith("+"):
             phone = "+" + phone
         if not re.match(r"^\+[1-9]\d{6,14}$", phone):
-            raise ValueError("Numéro de téléphone invalide")
+            raise ValueError("Numero de telephone invalide")
         return phone
 
 
@@ -42,3 +44,18 @@ class Token(BaseModel):
     token_type: str = "bearer"
     user_id: str
     phone: str
+    # person_id non nul => l'utilisateur a deja fait son onboarding.
+    person_id: Optional[str] = None
+    onboarded: bool = False
+
+
+class MeResponse(BaseModel):
+    user_id: str
+    phone: str
+    person_id: Optional[str] = None
+    onboarded: bool = False
+
+
+class LinkPersonRequest(BaseModel):
+    """C'est moi : rattache l'utilisateur a une fiche existante du canvas."""
+    person_id: uuid.UUID
