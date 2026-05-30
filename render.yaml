@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: jabot-api
+    env: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jabot-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: jabot-redis
+          type: redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_DAYS
+        value: "7"
+      - key: ENVIRONMENT
+        value: production
+      - key: AFRICAS_TALKING_API_KEY
+        sync: false
+      - key: AFRICAS_TALKING_USERNAME
+        sync: false
+      - key: AFRICAS_TALKING_SENDER_ID
+        value: JABOT
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+
+databases:
+  - name: jabot-db
+    databaseName: jabot_db
+    plan: starter
+    region: frankfurt
+    postgresMajorVersion: "16"
+
+  - name: jabot-redis
+    plan: starter
+    region: frankfurt
