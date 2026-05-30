@@ -26,7 +26,12 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Africa's Talking SMS
+    # Vonage SMS (fournisseur principal — couverture mondiale)
+    VONAGE_API_KEY: str = ""
+    VONAGE_API_SECRET: str = ""
+    VONAGE_BRAND_NAME: str = "JabotAI"
+
+    # Africa's Talking SMS (fournisseur de secours)
     AFRICAS_TALKING_API_KEY: str = ""
     AFRICAS_TALKING_USERNAME: str = "sandbox"
     AFRICAS_TALKING_SENDER_ID: str = "JABOT"
