@@ -1,5 +1,4 @@
 import asyncio
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -9,14 +8,14 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Load app models so Alembic can detect them
+from app.config import settings
 from app.database import Base
 from app.models import Person, CanvasPosition, User, Relationship, Media  # noqa: F401
 
 config = context.config
 
-# Override sqlalchemy.url from environment if available
-db_url = os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
-config.set_main_option("sqlalchemy.url", db_url)
+# Use the normalized (asyncpg) URL from settings so Alembic and the app agree.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
