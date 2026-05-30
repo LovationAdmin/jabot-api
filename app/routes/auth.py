@@ -14,14 +14,13 @@ router = APIRouter()
 @router.post("/request-otp", status_code=200)
 async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
     """
-    Envoie un code OTP à 6 chiffres par SMS via Africa's Talking.
-    Le code expire après 10 minutes.
+    Envoie un code OTP à 6 chiffres par SMS (Vonage en priorité, sinon
+    Africa's Talking). Le code expire après 10 minutes.
 
-    Repli "dev": si aucun fournisseur SMS n'est configuré
-    (AFRICAS_TALKING_API_KEY absent), le code est renvoyé dans la réponse
-    (champ `dev_code`) pour permettre les tests sans coût SMS.
+    Repli "dev": si aucun fournisseur SMS n'est configuré, le code est
+    renvoyé dans la réponse (champ `dev_code`) pour tester sans coût SMS.
     """
-    sms_configured = bool(settings.AFRICAS_TALKING_API_KEY)
+    sms_configured = sms_service.is_configured()
 
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.phone, code)
