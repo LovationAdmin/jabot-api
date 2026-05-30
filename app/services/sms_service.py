@@ -17,12 +17,10 @@ def _africas_talking_configured() -> bool:
 
 
 def is_configured() -> bool:
-    """True si au moins un fournisseur SMS réel est configuré."""
     return _vonage_configured() or _africas_talking_configured()
 
 
 def _normalize_msisdn(phone: str) -> str:
-    """Vonage attend un MSISDN sans '+' ni espaces."""
     return phone.replace(" ", "").replace("-", "").lstrip("+")
 
 
@@ -42,16 +40,16 @@ async def _send_vonage(phone: str, message: str) -> bool:
             result = response.json()
             messages = result.get("messages", [])
             if messages and messages[0].get("status") == "0":
-                logger.info(f"SMS Vonage envoyé avec succès à {phone}")
+                logger.info(f"SMS Vonage envoye avec succes a {phone}")
                 return True
             err = messages[0].get("error-text") if messages else result
-            logger.error(f"Échec Vonage à {phone}: {err}")
+            logger.error(f"Echec Vonage a {phone}: {err}")
             return False
     except httpx.HTTPError as e:
-        logger.error(f"Erreur HTTP Vonage à {phone}: {e}")
+        logger.error(f"Erreur HTTP Vonage a {phone}: {e}")
         return False
     except Exception as e:
-        logger.error(f"Erreur inattendue Vonage à {phone}: {e}")
+        logger.error(f"Erreur inattendue Vonage a {phone}: {e}")
         return False
 
 
@@ -76,23 +74,19 @@ async def _send_africas_talking(phone: str, message: str) -> bool:
             result = response.json()
             recipients = result.get("SMSMessageData", {}).get("Recipients", [])
             if recipients and recipients[0].get("status") == "Success":
-                logger.info(f"SMS Africa's Talking envoyé avec succès à {phone}")
+                logger.info(f"SMS Africa's Talking envoye avec succes a {phone}")
                 return True
-            logger.error(f"Échec Africa's Talking à {phone}: {result}")
+            logger.error(f"Echec Africa's Talking a {phone}: {result}")
             return False
     except httpx.HTTPError as e:
-        logger.error(f"Erreur HTTP Africa's Talking à {phone}: {e}")
+        logger.error(f"Erreur HTTP Africa's Talking a {phone}: {e}")
         return False
     except Exception as e:
-        logger.error(f"Erreur inattendue Africa's Talking à {phone}: {e}")
+        logger.error(f"Erreur inattendue Africa's Talking a {phone}: {e}")
         return False
 
 
 async def send_sms(phone: str, message: str) -> bool:
-    """Envoie un SMS via le premier fournisseur configuré (Vonage puis Africa's Talking).
-
-    Si aucun fournisseur n'est configuré, log le message (mode dev) et renvoie True.
-    """
     if _vonage_configured():
         return await _send_vonage(phone, message)
     if _africas_talking_configured():
@@ -102,9 +96,8 @@ async def send_sms(phone: str, message: str) -> bool:
 
 
 async def send_otp_sms(phone: str, otp_code: str) -> bool:
-    """Send OTP code via SMS."""
     message = (
-        f"Votre code de vérification JABOT est: {otp_code}\n"
+        f"Votre code de verification JABOT est: {otp_code}\n"
         f"Ce code expire dans 10 minutes. Ne le partagez avec personne."
     )
     return await send_sms(phone, message)

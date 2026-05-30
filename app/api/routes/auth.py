@@ -23,9 +23,9 @@ class RequestOtpBody(BaseModel):
     def validate_phone(cls, v: str) -> str:
         cleaned = v.replace(" ", "").replace("-", "")
         if not cleaned.startswith("+"):
-            raise ValueError("Le numéro doit être au format international (+...)")
+            raise ValueError("Le numero doit etre au format international (+...)")
         if len(cleaned) < 8 or len(cleaned) > 16:
-            raise ValueError("Numéro de téléphone invalide")
+            raise ValueError("Numero de telephone invalide")
         return cleaned
 
 
@@ -56,20 +56,19 @@ async def request_otp(body: RequestOtpBody):
 
     sent = await sms_service.send_otp_sms(phone, code)
 
-    # On expose le code de test quand :
-    #   - on est en développement, OU
-    #   - aucun fournisseur SMS réel n'est configuré, OU
-    #   - l'envoi a échoué (ex: compte Vonage encore en trial / paiement pending).
-    # Cela permet de tester tout le flux OTP sans dépendre du SMS.
+    # On expose le code de test quand:
+    #   - on est en developpement, OU
+    #   - aucun fournisseur SMS reel n'est configure, OU
+    #   - l'envoi a echoue (ex: compte Vonage encore en trial / paiement pending).
     dev_code = None
     if settings.ENVIRONMENT == "development" or not sms_service.is_configured() or not sent:
         dev_code = code
 
     if not sent and sms_service.is_configured():
-        logger.warning(f"SMS non envoyé à {phone}, code exposé en dev_code")
+        logger.warning(f"SMS non envoye a {phone}, code expose en dev_code")
 
     if sent and sms_service.is_configured():
-        message = "Code envoyé par SMS"
+        message = "Code envoye par SMS"
     else:
         message = "SMS indisponible, utilisez le code de test"
 
@@ -82,7 +81,7 @@ async def verify_otp(body: VerifyOtpBody):
     if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Code invalide ou expiré",
+            detail="Code invalide ou expire",
         )
 
     user = await user_service.get_or_create_user(body.phone)

@@ -10,8 +10,6 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def _normalize_db_url(cls, v: str) -> str:
-        # Render fournit l'URL au format sync (postgres:// ou postgresql://).
-        # On force le driver asyncpg utilisé par l'app et Alembic.
         if v.startswith("postgres://"):
             v = "postgresql://" + v[len("postgres://"):]
         if v.startswith("postgresql://"):
@@ -26,7 +24,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Vonage SMS (fournisseur principal — couverture mondiale)
+    # Vonage SMS (fournisseur principal - couverture mondiale)
     VONAGE_API_KEY: str = ""
     VONAGE_API_SECRET: str = ""
     VONAGE_BRAND_NAME: str = "JabotAI"
