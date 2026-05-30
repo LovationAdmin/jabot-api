@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     AFRICAS_TALKING_USERNAME: str = "sandbox"
     AFRICAS_TALKING_SENDER_ID: str = "JABOT"
 
+    # SMS dev mode : si True, on n'appelle PAS le fournisseur SMS reel et on
+    # expose toujours le code dans la reponse (dev_code). Permet de garder les
+    # cles Vonage configurees tout en testant sans envoyer de vrai SMS (utile
+    # tant que le compte Vonage est en trial / paiement pending).
+    SMS_DEV_MODE: bool = False
+
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
