@@ -1,4 +1,10 @@
 services:
+  - type: redis
+    name: jabot-redis
+    region: frankfurt
+    plan: free
+    ipAllowList: []
+
   - type: web
     name: jabot-api
     env: python
@@ -46,7 +52,3 @@ databases:
     plan: free
     region: frankfurt
     postgresMajorVersion: "16"
-
-  - name: jabot-redis
-    plan: free
-    region: frankfurt
