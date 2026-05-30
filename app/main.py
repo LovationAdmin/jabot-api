@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +14,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Origines statiques toujours autorisées
+_STATIC_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
+# Regex: tous les sous-domaines *.vercel.app
+_VERCEL_ORIGIN_RE = re.compile(r"https://[a-z0-9-]+\.vercel\.app$")
+
+
+def _is_allowed(origin: str) -> bool:
+    if origin in _STATIC_ORIGINS:
+        return True
+    if settings.FRONTEND_URL and origin == settings.FRONTEND_URL:
+        return True
+    return bool(_VERCEL_ORIGIN_RE.match(origin))
 
 
 @asynccontextmanager
@@ -31,7 +49,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["*"],          # Contourné par allow_origin_regex ci-dessous
+    allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
