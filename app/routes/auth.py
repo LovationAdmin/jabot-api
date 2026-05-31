@@ -112,6 +112,31 @@ async def link_person(
     )
 
 
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_me(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Supprime le compte de l'utilisateur connecté.
+
+    La fiche Person liée est conservée dans l'arbre ; seul le lien est rompu
+    en mettant persons.created_by = NULL pour toutes les fiches créées par
+    cet utilisateur. L'enregistrement User est ensuite supprimé.
+    """
+    from sqlalchemy import update
+    from app.models.person import Person as PersonModel
+
+    # Nullifier created_by sur les fiches créées par cet utilisateur
+    await db.execute(
+        update(PersonModel)
+        .where(PersonModel.created_by == current_user.id)
+        .values(created_by=None)
+    )
+
+    await db.delete(current_user)
+    await db.commit()
+
+
 @router.post("/onboard", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
 async def onboard(
     body: PersonCreate,
