@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routes import auth, persons, tree, media, audit
+from app.routes import auth, persons, tree, media, audit, admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +48,7 @@ app.include_router(persons.router, prefix=f"{API_PREFIX}/persons", tags=["Person
 app.include_router(tree.router, prefix=f"{API_PREFIX}/tree", tags=["Arbre genealogique"])
 app.include_router(media.router, prefix=f"{API_PREFIX}/media", tags=["Medias"])
 app.include_router(audit.router, prefix=API_PREFIX, tags=["Audit"])
+app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["Admin"])
 
 
 @app.get("/", tags=["Health"])
