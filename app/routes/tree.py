@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.person import Person, CanvasPosition
@@ -39,7 +40,9 @@ async def get_full_tree(
     l'utilisateur est identifié (current_user non None).
     """
     persons_result = await db.execute(
-        select(Person).where(Person.deleted_at.is_(None))
+        select(Person)
+        .options(selectinload(Person.media))
+        .where(Person.deleted_at.is_(None))
     )
     persons = persons_result.scalars().all()
 
