@@ -18,7 +18,7 @@ class Relationship(Base):
     person_b_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("persons.id"), nullable=False
     )
-    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    type: Mapped[str] = mapped_column(String(30), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -33,7 +33,8 @@ class Relationship(Base):
     __table_args__ = (
         UniqueConstraint("person_a_id", "person_b_id", "type", name="uq_relationship"),
         CheckConstraint(
-            "type IN ('parent', 'child', 'sibling', 'spouse')",
+            "type IN ('parent', 'child', 'sibling', 'spouse', "
+            "'half_sibling', 'step_sibling', 'step_parent', 'step_child', 'homonym')",
             name="chk_relationship_type"
         ),
     )
