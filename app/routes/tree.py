@@ -174,6 +174,84 @@ async def get_person_subtree(
     return {"nodes": nodes, "edges": edges, "center_id": str(person_id)}
 
 
+async def _safe_add_rel(db: AsyncSession, a_id: uuid.UUID, b_id: uuid.UUID, rel_type: str) -> None:
+    """Crée une relation si elle n'existe pas déjà et que A ≠ B."""
+    if a_id == b_id:
+        return
+    existing = await db.execute(
+        select(Relationship).where(
+            Relationship.person_a_id == a_id,
+            Relationship.person_b_id == b_id,
+            Relationship.type == rel_type,
+        )
+    )
+    if existing.scalar_one_or_none() is None:
+        db.add(Relationship(id=uuid.uuid4(), person_a_id=a_id, person_b_id=b_id, type=rel_type))
+
+
+async def _deduce_from_new_parent_link(
+    db: AsyncSession, parent_id: uuid.UUID, child_id: uuid.UUID
+) -> None:
+    """
+    Quand parent_id → child_id (type parent) vient d'être créé :
+    a) Fratrie : child_id devient frère/sœur de tous les autres enfants
+       de parent_id (liens sibling dans les deux sens).
+    b) Grands-parents : les parents de parent_id deviennent grands-parents
+       de child_id (lien grandparent).
+    """
+    # a) Autres enfants de ce parent → fratrie avec child_id
+    siblings_result = await db.execute(
+        select(Relationship).where(
+            Relationship.person_a_id == parent_id,
+            Relationship.person_b_id != child_id,
+            Relationship.type == "parent",
+        )
+    )
+    for sib_rel in siblings_result.scalars().all():
+        sib_id = sib_rel.person_b_id
+        await _safe_add_rel(db, child_id, sib_id, "sibling")
+        await _safe_add_rel(db, sib_id, child_id, "sibling")
+
+    # b) Parents du parent → grands-parents de child_id
+    grandparents_result = await db.execute(
+        select(Relationship).where(
+            Relationship.person_b_id == parent_id,
+            Relationship.type == "parent",
+        )
+    )
+    for gp_rel in grandparents_result.scalars().all():
+        gp_id = gp_rel.person_a_id
+        await _safe_add_rel(db, gp_id, child_id, "grandparent")
+
+    await db.commit()
+
+
+async def _propagate_parents_to_sibling(
+    db: AsyncSession, source_id: uuid.UUID, target_id: uuid.UUID
+) -> None:
+    """Copie les liens parent→source vers parent→target (sans doublon)."""
+    parents_result = await db.execute(
+        select(Relationship).where(
+            Relationship.person_b_id == source_id,
+            Relationship.type == "parent",
+        )
+    )
+    for pr in parents_result.scalars().all():
+        parent_id = pr.person_a_id
+        if parent_id == target_id:
+            continue
+        already = await db.execute(
+            select(Relationship).where(
+                Relationship.person_a_id == parent_id,
+                Relationship.person_b_id == target_id,
+                Relationship.type == "parent",
+            )
+        )
+        if already.scalar_one_or_none() is None:
+            db.add(Relationship(id=uuid.uuid4(), person_a_id=parent_id, person_b_id=target_id, type="parent"))
+    await db.commit()
+
+
 @router.post("/relationships", response_model=RelationshipResponse, status_code=201)
 async def add_relationship(
     body: RelationshipCreate,
@@ -212,6 +290,20 @@ async def add_relationship(
     db.add(rel)
     await db.commit()
     await db.refresh(rel)
+
+    # ── Déduction automatique des liens de parenté ──────────────────
+    # 1. Fratrie → propager les parents de A vers B et vice-versa.
+    if rel.type == "sibling":
+        await _propagate_parents_to_sibling(db, rel.person_a_id, rel.person_b_id)
+        await _propagate_parents_to_sibling(db, rel.person_b_id, rel.person_a_id)
+
+    # 2. Nouveau parent → créer automatiquement:
+    #    a) lien "sibling" entre le nouvel enfant (B) et tous les autres
+    #       enfants du parent (A) → fratrie déduite.
+    #    b) lien "grandparent" entre les parents du parent (A) et l'enfant (B).
+    if rel.type == "parent":
+        await _deduce_from_new_parent_link(db, parent_id=rel.person_a_id, child_id=rel.person_b_id)
+
     await write_audit(
         db,
         actor_user_id=current_user.id,
