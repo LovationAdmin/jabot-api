@@ -136,6 +136,20 @@ async def compute_tree_layout(
                     generations[pid] = best_gen
                     changed = True
 
+    # Pass 2b: les frères/sœurs partagent la même génération. On propage la
+    # génération connue à travers les arêtes "sibling" (utile si un frère n'a
+    # pas d'arête parent mais est relié à un autre frère déjà placé).
+    changed = True
+    while changed:
+        changed = False
+        for pid in list(pid_set):
+            if pid not in generations:
+                continue
+            for sib in siblings_of[pid]:
+                if sib in pid_set and generations.get(sib) != generations[pid]:
+                    generations[sib] = generations[pid]
+                    changed = True
+
     # Assign remaining unvisited persons (disconnected nodes)
     max_gen = max(generations.values(), default=0)
     for p in persons:
