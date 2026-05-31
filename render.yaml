@@ -10,7 +10,10 @@ services:
     env: python
     region: frankfurt
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # Le `python -c "import app.main"` est un smoke-test : si un import est cassé
+    # (module manquant, erreur de syntaxe...), le build échoue ici AVANT le déploiement,
+    # ce qui évite de mettre en prod une version qui ne démarre pas.
+    buildCommand: pip install -r requirements.txt && python -c "import app.main"
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
