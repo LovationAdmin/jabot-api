@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 GENERATION_HEIGHT = 300   # px between generations
 NODE_WIDTH = 220           # px per node
-NODE_SPACING = 40          # horizontal gap between nodes
+NODE_SPACING = 50          # horizontal gap between nodes within a family
+CLUSTER_SPACING = 200      # extra horizontal gap between disconnected family trees
 
 
 async def compute_tree_layout(
@@ -42,6 +43,9 @@ async def compute_tree_layout(
     """
     Assign x,y positions to each person for React Flow rendering.
 
+    Layout per connected component (Union-Find), then place components
+    side-by-side with CLUSTER_SPACING between them.
+
     Returns list of dicts: {person_id, x, y, generation}
     """
     if not persons:
@@ -50,7 +54,71 @@ async def compute_tree_layout(
     person_map: Dict[uuid.UUID, Person] = {p.id: p for p in persons}
     pid_set: Set[uuid.UUID] = set(person_map.keys())
 
-    # Build adjacency: parent→children, child→parents
+    # ── Identify connected components via Union-Find ──────────────────
+    uf: Dict[uuid.UUID, uuid.UUID] = {p.id: p.id for p in persons}
+
+    def find(x: uuid.UUID) -> uuid.UUID:
+        while uf[x] != x:
+            uf[x] = uf[uf[x]]
+            x = uf[x]
+        return x
+
+    def union(a: uuid.UUID, b: uuid.UUID) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            uf[ra] = rb
+
+    for r in relationships:
+        if r.person_a_id in pid_set and r.person_b_id in pid_set:
+            union(r.person_a_id, r.person_b_id)
+
+    comp_members: Dict[uuid.UUID, List[Person]] = defaultdict(list)
+    for p in persons:
+        comp_members[find(p.id)].append(p)
+    sorted_comps = sorted(comp_members.values(), key=len, reverse=True)
+
+    def rels_for(comp_pids: Set[uuid.UUID]) -> List:
+        return [r for r in relationships
+                if r.person_a_id in comp_pids and r.person_b_id in comp_pids]
+
+    # ── Layout each component independently ──────────────────────────
+    all_positions: List[Dict] = []
+    current_x_offset = 0.0
+
+    for comp in sorted_comps:
+        comp_pids = {p.id for p in comp}
+        comp_pos = _layout_component(comp, rels_for(comp_pids), person_map)
+        if not comp_pos:
+            continue
+
+        xs = [pos["x"] for pos in comp_pos]
+        x_min, x_max = min(xs), max(xs) + NODE_WIDTH
+        shift = current_x_offset - x_min
+        for pos in comp_pos:
+            pos["x"] += shift
+        all_positions.extend(comp_pos)
+        current_x_offset += (x_max - x_min) + CLUSTER_SPACING
+
+    # Re-center the whole layout around x=0
+    if all_positions:
+        all_xs = [pos["x"] for pos in all_positions]
+        center_shift = -(min(all_xs) + max(all_xs) + NODE_WIDTH) / 2
+        for pos in all_positions:
+            pos["x"] += center_shift
+
+    return all_positions
+
+
+def _layout_component(
+    persons: List[Person],
+    relationships: List,
+    person_map: Dict[uuid.UUID, Person],
+) -> List[Dict]:
+    """Lay out a single connected component. Returns positions with x relative to 0."""
+    if not persons:
+        return []
+
+    pid_set: Set[uuid.UUID] = {p.id for p in persons}
     parents_of: Dict[uuid.UUID, Set[uuid.UUID]] = defaultdict(set)
     children_of: Dict[uuid.UUID, Set[uuid.UUID]] = defaultdict(set)
     spouses_of: Dict[uuid.UUID, Set[uuid.UUID]] = defaultdict(set)
@@ -61,11 +129,9 @@ async def compute_tree_layout(
         if a not in pid_set or b not in pid_set:
             continue
         if r.type == "parent":
-            # person_a is parent of person_b
             parents_of[b].add(a)
             children_of[a].add(b)
         elif r.type == "child":
-            # person_a is child of person_b
             parents_of[a].add(b)
             children_of[b].add(a)
         elif r.type == "spouse":
@@ -75,57 +141,38 @@ async def compute_tree_layout(
             siblings_of[a].add(b)
             siblings_of[b].add(a)
 
-    # Assign generations using BFS from roots (persons with no parents in the set)
-    # Strategy:
-    #   Pass 1 — BFS strictly through parent→child edges. Seed only with persons
-    #             that have no parents AND are not reachable as spouses of placed nodes.
-    #   Pass 2 — assign spouses the same generation as their placed partner (override
-    #             any preliminary generation they were given).
-    #   Pass 3 — place remaining disconnected persons after the deepest known gen.
     generations: Dict[uuid.UUID, int] = {}
-
-    # Persons with no parents in this subgraph
     no_parents = {p.id for p in persons if len(parents_of[p.id] & pid_set) == 0}
-
-    # Among those, prefer persons who have children (true structural ancestors).
-    # Persons with no parents AND no children are likely "external spouses" — defer them.
     true_roots = [pid for pid in no_parents if children_of[pid] & pid_set]
     if not true_roots:
-        # Fall back: use all no-parent nodes (but pass 2 will fix spouses)
         true_roots = list(no_parents)
     if not true_roots:
         sorted_persons = sorted(
-            persons,
-            key=lambda p: p.birth_date.toordinal() if p.birth_date else 999999
+            persons, key=lambda p: p.birth_date.toordinal() if p.birth_date else 999999
         )
         true_roots = [sorted_persons[0].id]
 
-    # Pass 1: BFS through parent→child only
+    # Pass 1: BFS through parent→child
     queue = list(true_roots)
     for pid in queue:
         if pid not in generations:
             generations[pid] = 0
-
     head = 0
     while head < len(queue):
-        pid = queue[head]
-        head += 1
+        pid = queue[head]; head += 1
         gen = generations[pid]
         for child_id in children_of[pid]:
             if child_id not in generations:
                 generations[child_id] = gen + 1
                 queue.append(child_id)
 
-    # Pass 2: assign spouses the same generation as their placed partner.
-    # Override any generation assigned in pass 1 if the partner's generation is higher.
-    # Iterate until stable (handles chains of spouses).
+    # Pass 2: spouses share the same generation
     changed = True
     while changed:
         changed = False
         for pid in list(pid_set):
             partner_gens = [
-                generations[sp]
-                for sp in spouses_of[pid]
+                generations[sp] for sp in spouses_of[pid]
                 if sp in generations and sp in (children_of.keys() | set(true_roots))
             ]
             if not partner_gens:
@@ -136,9 +183,7 @@ async def compute_tree_layout(
                     generations[pid] = best_gen
                     changed = True
 
-    # Pass 2b: les frères/sœurs partagent la même génération. On propage la
-    # génération connue à travers les arêtes "sibling" (utile si un frère n'a
-    # pas d'arête parent mais est relié à un autre frère déjà placé).
+    # Pass 2b: siblings share the same generation
     changed = True
     while changed:
         changed = False
@@ -150,18 +195,16 @@ async def compute_tree_layout(
                     generations[sib] = generations[pid]
                     changed = True
 
-    # Assign remaining unvisited persons (disconnected nodes)
     max_gen = max(generations.values(), default=0)
     for p in persons:
         if p.id not in generations:
             generations[p.id] = max_gen + 1
 
-    # Group persons by generation
     gen_groups: Dict[int, List[uuid.UUID]] = defaultdict(list)
     for pid, gen in generations.items():
         gen_groups[gen].append(pid)
 
-    # Sort each generation by birth_date then name
+    slot = NODE_WIDTH + NODE_SPACING
     for gen in gen_groups:
         gen_groups[gen].sort(
             key=lambda pid: (
@@ -169,23 +212,16 @@ async def compute_tree_layout(
                 person_map[pid].first_name or "",
             )
         )
-        # Move spouses next to each other within generation
         gen_groups[gen] = _reorder_spouses(gen_groups[gen], spouses_of)
 
-    # Compute x positions: center each generation
     positions: Dict[uuid.UUID, Dict] = {}
-    all_generations = sorted(gen_groups.keys())
-
-    for gen in all_generations:
-        members = gen_groups[gen]
+    for gen, members in gen_groups.items():
         n = len(members)
         total_width = n * NODE_WIDTH + (n - 1) * NODE_SPACING
         start_x = -(total_width / 2)
         y = gen * GENERATION_HEIGHT
-
         for i, pid in enumerate(members):
-            x = start_x + i * (NODE_WIDTH + NODE_SPACING)
-            positions[pid] = {"person_id": str(pid), "x": x, "y": y, "generation": gen}
+            positions[pid] = {"person_id": str(pid), "x": start_x + i * slot, "y": y, "generation": gen}
 
     return list(positions.values())
 
@@ -194,10 +230,7 @@ def _reorder_spouses(
     pids: List[uuid.UUID],
     spouses_of: Dict[uuid.UUID, Set[uuid.UUID]],
 ) -> List[uuid.UUID]:
-    """
-    Reorder a list of person IDs so that spouses appear adjacent to each other.
-    Uses a greedy insertion approach.
-    """
+    """Reorder so spouses appear adjacent. Uses greedy insertion."""
     result: List[uuid.UUID] = []
     placed: Set[uuid.UUID] = set()
 
@@ -206,7 +239,6 @@ def _reorder_spouses(
             continue
         result.append(pid)
         placed.add(pid)
-        # Place any spouses immediately after
         for spouse_id in spouses_of.get(pid, set()):
             if spouse_id in pids and spouse_id not in placed:
                 result.append(spouse_id)
