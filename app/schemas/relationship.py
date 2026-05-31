@@ -3,7 +3,17 @@ from datetime import datetime
 from pydantic import BaseModel, field_validator
 
 
-VALID_TYPES = ("parent", "child", "sibling", "spouse")
+VALID_TYPES = (
+    "parent",
+    "child",
+    "sibling",
+    "spouse",
+    "half_sibling",
+    "step_sibling",
+    "step_parent",
+    "step_child",
+    "homonym",
+)
 
 
 class RelationshipCreate(BaseModel):
