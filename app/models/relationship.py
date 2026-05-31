@@ -34,7 +34,8 @@ class Relationship(Base):
         UniqueConstraint("person_a_id", "person_b_id", "type", name="uq_relationship"),
         CheckConstraint(
             "type IN ('parent', 'child', 'sibling', 'spouse', "
-            "'half_sibling', 'step_sibling', 'step_parent', 'step_child', 'homonym')",
+            "'half_sibling', 'step_sibling', 'step_parent', 'step_child', 'homonym', "
+            "'grandparent', 'grandchild', 'uncle_aunt', 'nephew_niece', 'cousin')",
             name="chk_relationship_type"
         ),
     )
