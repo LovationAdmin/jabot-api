@@ -1,6 +1,6 @@
 import uuid
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from app.models.person import Person, CanvasPosition
 from app.models.relationship import Relationship
 from app.schemas.relationship import RelationshipCreate, RelationshipResponse
 from app.schemas.person import PersonResponse
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.services.tree_service import compute_tree_layout, merge_persons
 
@@ -20,9 +20,14 @@ router = APIRouter()
 
 
 @router.get("")
-async def get_full_tree(db: AsyncSession = Depends(get_db)):
+async def get_full_tree(
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Retourne l'arbre complet: noeuds (personnes) + arêtes (relations) pour React Flow.
+    Accessible sans authentification (visiteur anonyme). Si un token valide est fourni,
+    l'utilisateur est identifié (current_user non None).
     """
     persons_result = await db.execute(
         select(Person).where(Person.deleted_at.is_(None))
