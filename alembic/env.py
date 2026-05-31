@@ -10,7 +10,7 @@ from alembic import context
 # Load app models so Alembic can detect them
 from app.config import settings
 from app.database import Base
-from app.models import Person, CanvasPosition, User, Relationship, Media  # noqa: F401
+from app.models import Person, CanvasPosition, User, Relationship, Media, AuditLog  # noqa: F401
 
 config = context.config
 

@@ -17,6 +17,7 @@ from app.schemas.person import (
 from app.middleware.auth import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.services.search_service import search_persons
+from app.services.audit_service import write_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -77,6 +78,14 @@ async def create_person(
         .where(Person.id == person.id)
     )
     person = result.scalar_one()
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="create_person",
+        entity_type="person",
+        entity_id=str(person.id),
+        details={"first_name": person.first_name, "last_name": person.last_name},
+    )
     return person
 
 
@@ -124,6 +133,14 @@ async def update_person(
         .where(Person.id == person_id)
     )
     person = result.scalar_one()
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="update_person",
+        entity_type="person",
+        entity_id=str(person_id),
+        details={"first_name": person.first_name, "last_name": person.last_name},
+    )
     return person
 
 
@@ -142,7 +159,16 @@ async def delete_person(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
 
     person.deleted_at = datetime.now(timezone.utc)
+    details = {"first_name": person.first_name, "last_name": person.last_name}
     await db.commit()
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="delete_person",
+        entity_type="person",
+        entity_id=str(person_id),
+        details=details,
+    )
 
 
 @router.post("/search", response_model=List[SearchMatch])

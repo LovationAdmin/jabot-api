@@ -14,6 +14,15 @@ from app.schemas.person import PersonResponse
 from app.middleware.auth import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.services.tree_service import compute_tree_layout, merge_persons
+from app.services.audit_service import write_audit
+
+
+async def _person_name(db: AsyncSession, person_id) -> str:
+    result = await db.execute(select(Person).where(Person.id == person_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        return str(person_id)
+    return f"{p.first_name} {p.last_name or ''}".strip()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -198,6 +207,20 @@ async def add_relationship(
     db.add(rel)
     await db.commit()
     await db.refresh(rel)
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="create_relationship",
+        entity_type="relationship",
+        entity_id=str(rel.id),
+        details={
+            "person_a_id": str(rel.person_a_id),
+            "person_b_id": str(rel.person_b_id),
+            "person_a_name": await _person_name(db, rel.person_a_id),
+            "person_b_name": await _person_name(db, rel.person_b_id),
+            "type": rel.type,
+        },
+    )
     return rel
 
 
@@ -212,8 +235,23 @@ async def delete_relationship(
     rel = result.scalar_one_or_none()
     if rel is None:
         raise HTTPException(status_code=404, detail="Relation introuvable")
+    details = {
+        "person_a_id": str(rel.person_a_id),
+        "person_b_id": str(rel.person_b_id),
+        "person_a_name": await _person_name(db, rel.person_a_id),
+        "person_b_name": await _person_name(db, rel.person_b_id),
+        "type": rel.type,
+    }
     await db.delete(rel)
     await db.commit()
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="delete_relationship",
+        entity_type="relationship",
+        entity_id=str(relationship_id),
+        details=details,
+    )
 
 
 @router.post("/merge")
@@ -241,5 +279,15 @@ async def merge_family_branches(
     if source_id == target_id:
         raise HTTPException(status_code=400, detail="Impossible de fusionner une personne avec elle-même")
 
+    source_name = await _person_name(db, source_id)
+    target_name = await _person_name(db, target_id)
     result = await merge_persons(db, source_id, target_id)
+    await write_audit(
+        db,
+        actor_user_id=current_user.id,
+        action="merge_persons",
+        entity_type="person",
+        entity_id=str(target_id),
+        details={"source_id": str(source_id), "source_name": source_name, "target_id": str(target_id), "target_name": target_name},
+    )
     return result
