@@ -377,3 +377,65 @@ async def detect_duplicates(
 
     pairs.sort(key=lambda x: x["score"], reverse=True)
     return {"duplicates": pairs, "total": len(pairs)}
+
+
+@router.post("/auto-merge-duplicates")
+async def auto_merge_duplicates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fusionne automatiquement toutes les paires de doublons avec un score ≥ 0.85.
+    La personne avec le moins d'informations est absorbée par l'autre.
+    Retourne un résumé des fusions effectuées.
+    """
+    persons_result = await db.execute(
+        select(Person).where(Person.deleted_at.is_(None))
+    )
+    persons = persons_result.scalars().all()
+
+    merged = []
+    already_merged: set[str] = set()
+
+    for i in range(len(persons)):
+        for j in range(i + 1, len(persons)):
+            a, b = persons[i], persons[j]
+            if str(a.id) in already_merged or str(b.id) in already_merged:
+                continue
+            score = _duplicate_score(a, b)
+            if score < 0.85:
+                continue
+
+            # Keep the person with more filled fields (target)
+            def filled(p: Person) -> int:
+                return sum(1 for v in [p.last_name, p.birth_date, p.death_date, p.gender, p.city_of_origin] if v)
+
+            source, target = (a, b) if filled(a) <= filled(b) else (b, a)
+
+            try:
+                await merge_persons(db, source.id, target.id)
+                await write_audit(
+                    db,
+                    actor_user_id=current_user.id,
+                    action="merge_persons",
+                    entity_type="person",
+                    entity_id=str(target.id),
+                    details={
+                        "source_id": str(source.id),
+                        "source_name": await _person_name(db, source.id),
+                        "target_id": str(target.id),
+                        "target_name": await _person_name(db, target.id),
+                        "auto": True,
+                        "score": score,
+                    },
+                )
+                already_merged.add(str(source.id))
+                merged.append({
+                    "source_id": str(source.id),
+                    "target_id": str(target.id),
+                    "score": round(score, 2),
+                })
+            except Exception as exc:
+                logger.warning(f"auto-merge failed for {source.id} → {target.id}: {exc}")
+
+    return {"merged": merged, "count": len(merged)}
