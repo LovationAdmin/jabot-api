@@ -314,22 +314,47 @@ def _name_similarity(a: Person, b: Person) -> float:
 
 def _duplicate_score(a: Person, b: Person) -> float:
     """
-    Returns a confidence score 0-1 that two persons are duplicates.
-    > 0.75 = high confidence, 0.5-0.75 = medium, < 0.5 = ignored.
+    Retourne un score 0-1 indiquant la probabilité que deux personnes soient
+    le même individu.
+
+    Règles d'élimination strictes (retour immédiat à 0) :
+    - Les deux ont un nom de famille et ils diffèrent → impossible
+    - Les deux ont une date de naissance et les années diffèrent → impossible
+
+    Scoring positif :
+    - Prénom identique (normalisé) = base 0.70
+    - Prénom similaire (≥ 0.80 SequenceMatcher) = base proportionnelle
+    - Même année de naissance → +0.20
+    - Date exacte identique → +0.10 supplémentaire
+    - Même genre → +0.05
     """
-    name_sim = _name_similarity(a, b)
-    if name_sim < 0.5:
+    # Éliminations strictes
+    ln_a = _normalize(a.last_name or "")
+    ln_b = _normalize(b.last_name or "")
+    if ln_a and ln_b and ln_a != ln_b:
         return 0.0
 
-    score = name_sim
-    # Bonus: same birth year
+    if a.birth_date and b.birth_date and a.birth_date.year != b.birth_date.year:
+        return 0.0
+
+    # Comparer uniquement les prénoms
+    fn_a = _normalize(a.first_name or "")
+    fn_b = _normalize(b.first_name or "")
+    if not fn_a or not fn_b:
+        return 0.0
+
+    fn_sim = SequenceMatcher(None, fn_a, fn_b).ratio()
+    if fn_sim < 0.80:
+        return 0.0
+
+    score = 0.50 + fn_sim * 0.30  # 0.74 → 0.80 selon similarité
+
     if a.birth_date and b.birth_date:
         if a.birth_date.year == b.birth_date.year:
-            score = min(1.0, score + 0.2)
-            # Bonus: exact same date
-            if a.birth_date == b.birth_date:
-                score = min(1.0, score + 0.1)
-    # Bonus: same gender
+            score = min(1.0, score + 0.20)
+        if a.birth_date == b.birth_date:
+            score = min(1.0, score + 0.10)
+
     if a.gender and b.gender and a.gender == b.gender:
         score = min(1.0, score + 0.05)
 

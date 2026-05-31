@@ -36,6 +36,8 @@ async def reset_database(db: AsyncSession = Depends(get_db)):
     await db.execute(text("DELETE FROM relationships"))
     await db.execute(text("DELETE FROM media"))
     await db.execute(text("DELETE FROM canvas_positions"))
+    # Détacher les fiches des comptes avant suppression (FK users.person_id → persons.id)
+    await db.execute(text("UPDATE users SET person_id = NULL"))
     await db.execute(text("DELETE FROM persons"))
     await db.commit()
     logger.warning("reset-db executed: all genealogy data deleted")
