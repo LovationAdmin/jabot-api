@@ -1,5 +1,7 @@
 import uuid
 import logging
+import unicodedata
+from difflib import SequenceMatcher
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -294,3 +296,146 @@ async def merge_family_branches(
         details={"source_id": str(source_id), "source_name": source_name, "target_id": str(target_id), "target_name": target_name},
     )
     return result
+
+
+def _normalize(s: str) -> str:
+    """Lowercase, remove accents and extra spaces."""
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return " ".join(s.lower().split())
+
+
+def _name_similarity(a: Person, b: Person) -> float:
+    """Return 0.0-1.0 similarity score between two persons based on name."""
+    full_a = _normalize(f"{a.first_name or ''} {a.last_name or ''}")
+    full_b = _normalize(f"{b.first_name or ''} {b.last_name or ''}")
+    return SequenceMatcher(None, full_a, full_b).ratio()
+
+
+def _duplicate_score(a: Person, b: Person) -> float:
+    """
+    Returns a confidence score 0-1 that two persons are duplicates.
+    > 0.75 = high confidence, 0.5-0.75 = medium, < 0.5 = ignored.
+    """
+    name_sim = _name_similarity(a, b)
+    if name_sim < 0.5:
+        return 0.0
+
+    score = name_sim
+    # Bonus: same birth year
+    if a.birth_date and b.birth_date:
+        if a.birth_date.year == b.birth_date.year:
+            score = min(1.0, score + 0.2)
+            # Bonus: exact same date
+            if a.birth_date == b.birth_date:
+                score = min(1.0, score + 0.1)
+    # Bonus: same gender
+    if a.gender and b.gender and a.gender == b.gender:
+        score = min(1.0, score + 0.05)
+
+    return score
+
+
+@router.get("/duplicates")
+async def detect_duplicates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Détecte les doublons potentiels dans l'arbre.
+    Retourne des paires de personnes avec un score de confiance.
+    """
+    persons_result = await db.execute(
+        select(Person).where(Person.deleted_at.is_(None))
+    )
+    persons = persons_result.scalars().all()
+
+    pairs = []
+    for i in range(len(persons)):
+        for j in range(i + 1, len(persons)):
+            score = _duplicate_score(persons[i], persons[j])
+            if score >= 0.6:
+                a, b = persons[i], persons[j]
+                pairs.append({
+                    "person_a": {
+                        "id": str(a.id),
+                        "first_name": a.first_name,
+                        "last_name": a.last_name,
+                        "birth_date": a.birth_date.isoformat() if a.birth_date else None,
+                        "gender": a.gender,
+                    },
+                    "person_b": {
+                        "id": str(b.id),
+                        "first_name": b.first_name,
+                        "last_name": b.last_name,
+                        "birth_date": b.birth_date.isoformat() if b.birth_date else None,
+                        "gender": b.gender,
+                    },
+                    "score": round(score, 2),
+                    "confidence": "high" if score >= 0.85 else "medium",
+                })
+
+    pairs.sort(key=lambda x: x["score"], reverse=True)
+    return {"duplicates": pairs, "total": len(pairs)}
+
+
+@router.post("/auto-merge-duplicates")
+async def auto_merge_duplicates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fusionne automatiquement toutes les paires de doublons avec un score ≥ 0.85.
+    La personne avec le moins d'informations est absorbée par l'autre.
+    Retourne un résumé des fusions effectuées.
+    """
+    persons_result = await db.execute(
+        select(Person).where(Person.deleted_at.is_(None))
+    )
+    persons = persons_result.scalars().all()
+
+    merged = []
+    already_merged: set[str] = set()
+
+    for i in range(len(persons)):
+        for j in range(i + 1, len(persons)):
+            a, b = persons[i], persons[j]
+            if str(a.id) in already_merged or str(b.id) in already_merged:
+                continue
+            score = _duplicate_score(a, b)
+            if score < 0.85:
+                continue
+
+            # Keep the person with more filled fields (target)
+            def filled(p: Person) -> int:
+                return sum(1 for v in [p.last_name, p.birth_date, p.death_date, p.gender, p.city_of_origin] if v)
+
+            source, target = (a, b) if filled(a) <= filled(b) else (b, a)
+
+            try:
+                await merge_persons(db, source.id, target.id)
+                await write_audit(
+                    db,
+                    actor_user_id=current_user.id,
+                    action="merge_persons",
+                    entity_type="person",
+                    entity_id=str(target.id),
+                    details={
+                        "source_id": str(source.id),
+                        "source_name": await _person_name(db, source.id),
+                        "target_id": str(target.id),
+                        "target_name": await _person_name(db, target.id),
+                        "auto": True,
+                        "score": score,
+                    },
+                )
+                already_merged.add(str(source.id))
+                merged.append({
+                    "source_id": str(source.id),
+                    "target_id": str(target.id),
+                    "score": round(score, 2),
+                })
+            except Exception as exc:
+                logger.warning(f"auto-merge failed for {source.id} → {target.id}: {exc}")
+
+    return {"merged": merged, "count": len(merged)}
