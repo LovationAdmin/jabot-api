@@ -221,28 +221,48 @@ def _layout_component(
     for pid, gen in generations.items():
         gen_groups[gen].append(pid)
 
-    # Sort within each generation by birth date then name, spouses adjacent
-    for gen in gen_groups:
-        gen_groups[gen].sort(
-            key=lambda pid: (
-                person_map[pid].birth_date.toordinal() if person_map[pid].birth_date else 999999,
-                person_map[pid].first_name or "",
-            )
+    def birth_key(pid: uuid.UUID):
+        return (
+            person_map[pid].birth_date.toordinal() if person_map[pid].birth_date else 999999,
+            person_map[pid].first_name or "",
         )
-        gen_groups[gen] = _reorder_spouses(gen_groups[gen], spouses_of)
 
-    # Compute x positions: center each generation within this component
+    # Compute x positions generation by generation, top → bottom.
+    # Pour chaque génération (sauf la racine), on ordonne les nœuds selon la
+    # position moyenne de leurs parents déjà placés : les enfants se regroupent
+    # ainsi sous leur couple parental (gère co-épouses simultanées comme
+    # remariages successifs, peu importe l'ordre des mariages). À défaut de
+    # parent placé, on retombe sur la date de naissance.
     positions: Dict[uuid.UUID, Dict] = {}
     slot = NODE_WIDTH + NODE_SPACING
+    ordered_gens = sorted(gen_groups.keys())
 
-    for gen, members in gen_groups.items():
+    for idx, gen in enumerate(ordered_gens):
+        members = gen_groups[gen]
+
+        if idx == 0:
+            members.sort(key=birth_key)
+        else:
+            def parent_anchor(pid: uuid.UUID):
+                px = [
+                    positions[pp]["x"]
+                    for pp in parents_of[pid]
+                    if pp in positions
+                ]
+                # Sans parent placé : très grande valeur → reste à droite, trié
+                # ensuite par naissance.
+                return (sum(px) / len(px) if px else float("inf"), *birth_key(pid))
+            members.sort(key=parent_anchor)
+
+        members = _reorder_spouses(members, spouses_of)
+        gen_groups[gen] = members
+
         n = len(members)
         total_width = n * NODE_WIDTH + (n - 1) * NODE_SPACING
         start_x = -(total_width / 2)
         y = gen * GENERATION_HEIGHT
         for i, pid in enumerate(members):
-            x = start_x + i * slot
-            positions[pid] = {"person_id": str(pid), "x": x, "y": y, "generation": gen}
+            positions[pid] = {"person_id": str(pid), "x": start_x + i * slot, "y": y, "generation": gen}
 
     return list(positions.values())
 
