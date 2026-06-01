@@ -7,6 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
+from app.security.types import EncryptedString, EncryptedDate
 
 
 class Person(Base):
@@ -19,9 +20,11 @@ class Person(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     nicknames: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
-    birth_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    death_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    city_of_origin: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # Champs chiffrés au repos (non utilisés par la recherche au niveau SQL ;
+    # les boosts Python opèrent sur les valeurs déchiffrées transparentes).
+    birth_date: Mapped[Optional[date]] = mapped_column(EncryptedDate, nullable=True)
+    death_date: Mapped[Optional[date]] = mapped_column(EncryptedDate, nullable=True)
+    city_of_origin: Mapped[Optional[str]] = mapped_column(EncryptedString, nullable=True)
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
