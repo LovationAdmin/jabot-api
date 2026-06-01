@@ -48,10 +48,31 @@ class ConnectionManager:
             logger.warning(f"WebSocket: Redis indisponible, mode mono-instance ({exc})")
 
     async def shutdown(self) -> None:
+        # Ferme proprement les connexions WebSocket pour ne pas faire traîner
+        # l'arrêt graceful d'uvicorn (sinon Render attend le timeout complet à
+        # chaque redéploiement, ce qui ralentit fortement les déploiements).
+        async with self._lock:
+            sockets = list(self._connections)
+            self._connections.clear()
+        for ws in sockets:
+            try:
+                await ws.close(code=1001)  # 1001 = going away
+            except Exception:
+                pass
+
         if self._pubsub_task:
             self._pubsub_task.cancel()
+            try:
+                await asyncio.wait_for(self._pubsub_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                pass
         if self._redis:
-            await self._redis.aclose()
+            try:
+                await self._redis.aclose()
+            except Exception:
+                pass
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
@@ -84,7 +105,10 @@ class ConnectionManager:
         dead: list[WebSocket] = []
         for ws in targets:
             try:
-                await ws.send_text(payload)
+                # Timeout d'envoi : un client lent ou mort ne doit pas bloquer la
+                # diffusion (et donc les endpoints de mutation qui l'attendent),
+                # d'autant plus critique avec WEB_CONCURRENCY=1 (un seul worker).
+                await asyncio.wait_for(ws.send_text(payload), timeout=5)
             except Exception:
                 dead.append(ws)
         if dead:
