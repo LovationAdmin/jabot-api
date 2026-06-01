@@ -30,26 +30,32 @@ async def _load_person(db: AsyncSession, person_id: uuid.UUID) -> Person:
 
 @router.post("/request-otp", status_code=200)
 async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
-    sms_configured = sms_service.is_configured()
-
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.phone, code)
 
     sent = await sms_service.send_otp_sms(body.phone, code)
 
-    response = {"phone": body.phone}
+    # Le dev_code (code en clair dans la reponse) n'est exposé QUE en mode dev
+    # SMS explicite. En production, ne JAMAIS renvoyer ni logger le code : sinon
+    # un echec d'envoi le ferait fuiter et permettrait d'usurper n'importe quel
+    # numero.
+    if settings.SMS_DEV_MODE:
+        logger.info(f"[SMS_DEV_MODE] Code OTP pour {body.phone}: {code}")
+        return {
+            "phone": body.phone,
+            "message": "Mode dev : utilisez le code affiché",
+            "dev_code": code,
+        }
 
-    if sent and sms_configured:
-        response["message"] = "Code OTP envoye avec succes"
-    else:
-        if sms_configured and not sent:
-            logger.warning(f"SMS non envoye a {body.phone}, repli dev_code actif")
-        else:
-            logger.warning(f"[NO-SMS] Code OTP pour {body.phone}: {code}")
-        response["message"] = "SMS indisponible, utilisez le code de test"
-        response["dev_code"] = code
+    if not sent:
+        # SMS reel en echec : on refuse sans divulguer le code.
+        logger.error(f"Echec d'envoi du SMS OTP a {body.phone}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Impossible d'envoyer le SMS pour le moment. Réessayez dans un instant.",
+        )
 
-    return response
+    return {"phone": body.phone, "message": "Code OTP envoyé avec succès"}
 
 
 @router.post("/verify-otp", response_model=Token)
@@ -76,11 +82,16 @@ async def verify_otp(body: OTPVerify, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=MeResponse)
 async def me(current_user: User = Depends(get_current_user)):
+    # Session glissante : on réémet un token frais à chaque appel /me (déclenché
+    # à chaque chargement de l'app). Un utilisateur actif repousse ainsi sans
+    # cesse l'expiration et ne refait jamais la validation OTP.
+    fresh_token = auth_service.create_access_token(str(current_user.id), current_user.phone)
     return MeResponse(
         user_id=str(current_user.id),
         phone=current_user.phone,
         person_id=str(current_user.person_id) if current_user.person_id else None,
         onboarded=current_user.person_id is not None,
+        access_token=fresh_token,
     )
 
 

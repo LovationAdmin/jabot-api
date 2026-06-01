@@ -54,6 +54,9 @@ class MeResponse(BaseModel):
     phone: str
     person_id: Optional[str] = None
     onboarded: bool = False
+    # Token reemis (session glissante) : le frontend le stocke pour repousser
+    # l'expiration. Absent si rien a renouveler.
+    access_token: Optional[str] = None
 
 
 class LinkPersonRequest(BaseModel):
