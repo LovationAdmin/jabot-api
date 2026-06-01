@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 GENERATION_HEIGHT = 300   # px between generations
 NODE_WIDTH = 220           # px per node
-NODE_SPACING = 50          # horizontal gap between nodes within a family
-CLUSTER_SPACING = 200      # extra horizontal gap between disconnected family trees
+NODE_SPACING = 80          # horizontal gap between nodes within a family
+CLUSTER_SPACING = 240      # extra horizontal gap between disconnected family trees
 
 
 async def compute_tree_layout(
@@ -264,7 +264,44 @@ def _layout_component(
         for i, pid in enumerate(members):
             positions[pid] = {"person_id": str(pid), "x": start_x + i * slot, "y": y, "generation": gen}
 
+    # ── Passage bottom-up : centrer les parents au-dessus de leurs enfants ──
+    # Le placement top-down ne fait qu'ORDONNER les nœuds puis les tasse à
+    # gauche, ce qui rend les traits parent→enfant diagonaux. Ici, en
+    # remontant des enfants vers les ancêtres, on positionne chaque nœud au
+    # barycentre horizontal de ses enfants déjà placés. Un couple, dont les
+    # deux conjoints partagent les mêmes enfants, vise le même barycentre :
+    # _place_row les répartit symétriquement autour → le point de jonction
+    # tombe pile au-dessus du groupe d'enfants → descente verticale.
+    for gen in reversed(ordered_gens[:-1]):
+        members = gen_groups[gen]
+        desired = []
+        for pid in members:
+            kids = [positions[c]["x"] for c in children_of[pid] if c in positions]
+            desired.append(sum(kids) / len(kids) if kids else positions[pid]["x"])
+        for pid, x in zip(members, _place_row(desired, slot)):
+            positions[pid]["x"] = x
+
     return list(positions.values())
+
+
+def _place_row(desired: List[float], slot: float) -> List[float]:
+    """
+    Place une rangée de nœuds en respectant l'ordre donné et un écart minimal
+    `slot`, en s'approchant au mieux des positions souhaitées `desired`.
+
+    On pousse de gauche à droite pour éliminer les chevauchements, puis on
+    recentre toute la rangée pour que la moyenne des positions finales
+    coïncide avec la moyenne souhaitée (évite la dérive vers la droite et
+    garde les couples centrés autour de leur barycentre d'enfants).
+    """
+    n = len(desired)
+    if n == 0:
+        return []
+    xs = [desired[0]]
+    for i in range(1, n):
+        xs.append(max(desired[i], xs[i - 1] + slot))
+    delta = (sum(desired) - sum(xs)) / n
+    return [x + delta for x in xs]
 
 
 def _reorder_spouses(
