@@ -30,12 +30,13 @@ app = FastAPI(
 )
 
 # CORS : on autorise le front configure (FRONTEND_URL) + le dev local, et via
-# regex TOUTES les previews Vercel (chaque deploiement a un sous-domaine
+# regex le domaine custom jabotai.com (apex + tout sous-domaine : www, etc.)
+# ainsi que TOUTES les previews Vercel (chaque deploiement a un sous-domaine
 # different : jabot-ui-xxxx.vercel.app), sinon chaque preview serait bloquee.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_URL, "http://localhost:3000", "http://localhost:5173"],
-    allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app",
+    allow_origin_regex=r"https://([a-z0-9-]+\.)?(jabotai\.com|vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
