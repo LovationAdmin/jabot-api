@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.user import User
+from app.security.crypto import phone_hash
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +76,18 @@ def decode_token(token: str) -> Optional[dict]:
 
 
 async def get_or_create_user(db: AsyncSession, phone: str) -> User:
-    """Get existing user by phone or create a new one."""
-    result = await db.execute(select(User).where(User.phone == phone))
+    """Get existing user by phone or create a new one.
+
+    Le téléphone étant chiffré (ciphertext non déterministe), la recherche par
+    égalité passe par phone_hash (hash HMAC déterministe).
+    """
+    ph = phone_hash(phone)
+    result = await db.execute(select(User).where(User.phone_hash == ph))
     user = result.scalar_one_or_none()
     if user is None:
-        user = User(id=uuid.uuid4(), phone=phone)
+        user = User(id=uuid.uuid4(), phone=phone, phone_hash=ph)
         db.add(user)
         await db.commit()
         await db.refresh(user)
-        logger.info(f"Nouvel utilisateur créé pour {phone}")
+        logger.info("Nouvel utilisateur créé")
     return user

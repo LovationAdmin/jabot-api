@@ -48,6 +48,16 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      # Chiffrement des champs sensibles — à définir AVANT la migration 005.
+      # Générer la clé Fernet :
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: ENCRYPTION_KEYS
+        sync: false
+      - key: PHONE_HMAC_KEY
+        generateValue: true
+      # SMS : false en prod (envoi réel, pas de dev_code exposé)
+      - key: SMS_DEV_MODE
+        value: "false"
 
 databases:
   - name: jabot-db

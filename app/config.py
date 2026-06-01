@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     # tant que le compte Vonage est en trial / paiement pending).
     SMS_DEV_MODE: bool = False
 
+    # Chiffrement applicatif des champs sensibles (téléphone, dates, ville).
+    # ENCRYPTION_KEYS : une ou plusieurs clés Fernet (urlsafe base64, 32 octets)
+    # séparées par des virgules. La 1re sert au chiffrement ; les suivantes
+    # permettent le déchiffrement lors d'une rotation. Vide => chiffrement
+    # désactivé (no-op, utile en dev).
+    ENCRYPTION_KEYS: str = ""
+    # Clé HMAC pour le hachage déterministe du téléphone (lookup à l'aveugle
+    # sans déchiffrer). Doit rester stable et secrète.
+    PHONE_HMAC_KEY: str = "change-me-phone-hmac-key"
+
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
