@@ -23,13 +23,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Champs réservés aux utilisateurs authentifiés (masqués pour les anonymes).
+_SENSITIVE_PERSON_FIELDS = {
+    "nicknames": None,
+    "gender": None,
+    "birth_date": None,
+    "death_date": None,
+    "city_of_origin": None,
+    "media": None,
+}
+
+
+def _mask_person(p: PersonResponse) -> PersonResponse:
+    """Ne conserve que le prénom + le nom (+ structure canvas) pour un anonyme."""
+    return p.model_copy(update=_SENSITIVE_PERSON_FIELDS)
+
+
 @router.get("", response_model=PersonListResponse)
 async def list_persons(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """Liste toutes les personnes (public, sans authentification)."""
+    """Liste toutes les personnes. Public, mais un visiteur anonyme ne reçoit
+    que le prénom + le nom (le reste est réservé aux utilisateurs connectés)."""
     count_result = await db.execute(
         select(func.count(Person.id)).where(Person.deleted_at.is_(None))
     )
@@ -43,8 +61,10 @@ async def list_persons(
         .offset(skip)
         .limit(limit)
     )
-    persons = result.scalars().all()
-    return PersonListResponse(total=total, persons=list(persons))
+    persons = [PersonResponse.model_validate(p) for p in result.scalars().all()]
+    if current_user is None:
+        persons = [_mask_person(p) for p in persons]
+    return PersonListResponse(total=total, persons=persons)
 
 
 @router.post("", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
@@ -93,8 +113,9 @@ async def create_person(
 async def get_person(
     person_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """Récupère le détail d'une personne."""
+    """Récupère le détail d'une personne. Anonyme : prénom + nom uniquement."""
     result = await db.execute(
         select(Person)
         .options(selectinload(Person.canvas_position), selectinload(Person.media))
@@ -103,7 +124,8 @@ async def get_person(
     person = result.scalar_one_or_none()
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
-    return person
+    resp = PersonResponse.model_validate(person)
+    return resp if current_user else _mask_person(resp)
 
 
 @router.put("/{person_id}", response_model=PersonResponse)
@@ -175,10 +197,16 @@ async def delete_person(
 async def search(
     body: SearchRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Recherche floue et phonétique de personnes pour l'onboarding.
     Combine pg_trgm trigram similarity + jellyfish phonétique + diminutifs ouest-africains.
+
+    Confidentialité : la recherche s'effectue toujours sur les données complètes
+    (le classement reste pertinent), mais un visiteur ANONYME ne reçoit en retour
+    que le prénom + le nom de chaque résultat. Les autres champs (dates, ville,
+    genre, photos) ne sont exposés qu'aux utilisateurs authentifiés.
     """
     if not body.name and not body.nickname and not body.parent_names and not body.sibling_names:
         raise HTTPException(
@@ -186,4 +214,16 @@ async def search(
             detail="Au moins un critère de recherche est requis",
         )
     matches = await search_persons(db, body)
+
+    if current_user is None:
+        for m in matches:
+            m.person = m.person.model_copy(update={
+                "nicknames": None,
+                "gender": None,
+                "birth_date": None,
+                "death_date": None,
+                "city_of_origin": None,
+                "media": None,
+            })
+
     return matches
