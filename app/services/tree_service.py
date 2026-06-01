@@ -373,22 +373,42 @@ def _layout_component(
 
 def _place_row(desired: List[float], slot: float) -> List[float]:
     """
-    Place une rangée de nœuds en respectant l'ordre donné et un écart minimal
-    `slot`, en s'approchant au mieux des positions souhaitées `desired`.
+    Place une rangée de nœuds ordonnés au plus près des positions souhaitées
+    `desired`, en respectant l'ordre donné et un écart minimal `slot`.
 
-    On pousse de gauche à droite pour éliminer les chevauchements, puis on
-    recentre toute la rangée pour que la moyenne des positions finales
-    coïncide avec la moyenne souhaitée (évite la dérive vers la droite et
-    garde les couples centrés autour de leur barycentre d'enfants).
+    Méthode : régression isotone (PAVA — Pool Adjacent Violators). On cherche
+    les positions finales `xs` qui minimisent Σ(xs[i] − desired[i])² sous la
+    contrainte xs[i+1] − xs[i] ≥ slot. En posant y[i] = xs[i] − i·slot, la
+    contrainte devient « y non décroissant » → c'est exactement une régression
+    isotone des cibles t[i] = desired[i] − i·slot, résolue optimalement par
+    PAVA.
+
+    Pourquoi PAVA et pas un simple push + recentrage global : pousser à droite
+    puis décaler toute la rangée d'un même delta désaligne chaque sous-famille
+    par rapport à son couple parental dès qu'une génération contient plusieurs
+    branches. PAVA donne le déplacement minimal SANS décalage global : chaque
+    sous-arbre se cale sur son propre barycentre, d'où des descentes verticales
+    propres même sur 3+ générations.
     """
     n = len(desired)
     if n == 0:
         return []
-    xs = [desired[0]]
-    for i in range(1, n):
-        xs.append(max(desired[i], xs[i - 1] + slot))
-    delta = (sum(desired) - sum(xs)) / n
-    return [x + delta for x in xs]
+    # Cibles normalisées : contrainte d'espacement → simple monotonie.
+    targets = [desired[i] - i * slot for i in range(n)]
+    # PAVA : on empile des blocs [somme, effectif, moyenne] et on fusionne tant
+    # que la moyenne du dernier bloc viole la monotonie (< bloc précédent).
+    blocks: List[List[float]] = []
+    for t in targets:
+        blocks.append([t, 1.0, t])
+        while len(blocks) > 1 and blocks[-2][2] > blocks[-1][2]:
+            s2, c2, _ = blocks.pop()
+            s1, c1, _ = blocks.pop()
+            s, c = s1 + s2, c1 + c2
+            blocks.append([s, c, s / c])
+    y: List[float] = []
+    for s, c, v in blocks:
+        y.extend([v] * int(c))
+    return [y[i] + i * slot for i in range(n)]
 
 
 def _reorder_spouses(
