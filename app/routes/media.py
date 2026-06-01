@@ -13,6 +13,7 @@ from app.schemas.media import MediaResponse
 from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.services.storage_service import upload_to_cloudinary, delete_from_cloudinary
+from app.services.ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,8 +27,10 @@ ALLOWED_IMAGE_TYPES = {
 }
 ALLOWED_AUDIO_TYPES = {
     "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/aac",
-    "audio/x-m4a", "audio/mp4",
+    "audio/x-m4a", "audio/mp4", "audio/webm",
 }
+# Base MIME types accepted for audio (codec params stripped before check)
+ALLOWED_AUDIO_BASE_TYPES = ALLOWED_AUDIO_TYPES
 
 
 @router.post("/upload", response_model=MediaResponse, status_code=status.HTTP_201_CREATED)
@@ -56,17 +59,18 @@ async def upload_media(
     if person_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
 
-    # Validate file type
-    content_type = file.content_type or ""
-    if media_type == "photo" and content_type not in ALLOWED_IMAGE_TYPES:
+    # Validate file type — strip codec params before matching (e.g. "audio/mp4;codecs=mp4a.40.2")
+    raw_ct = (file.content_type or "").strip()
+    base_ct = raw_ct.split(";")[0].strip().lower()
+    if media_type == "photo" and base_ct not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Type de fichier non supporté. Types acceptés: {', '.join(ALLOWED_IMAGE_TYPES)}",
         )
-    if media_type == "audio" and content_type not in ALLOWED_AUDIO_TYPES:
+    if media_type == "audio" and base_ct not in ALLOWED_AUDIO_BASE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Type de fichier audio non supporté. Types acceptés: {', '.join(ALLOWED_AUDIO_TYPES)}",
+            detail=f"Type de fichier audio non supporté. Types acceptés: {', '.join(sorted(ALLOWED_AUDIO_BASE_TYPES))}",
         )
 
     # Check count limit
@@ -128,6 +132,7 @@ async def upload_media(
     db.add(media_record)
     await db.commit()
     await db.refresh(media_record)
+    await ws_manager.broadcast("media.changed", {"person_id": str(person_id)}, str(current_user.id))
     return media_record
 
 
@@ -146,5 +151,7 @@ async def delete_media(
     # Delete from Cloudinary
     await delete_from_cloudinary(media_record.cloudinary_id, media_record.type)
 
+    pid = str(media_record.person_id)
     await db.delete(media_record)
     await db.commit()
+    await ws_manager.broadcast("media.changed", {"person_id": pid}, str(current_user.id))

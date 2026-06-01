@@ -15,6 +15,7 @@ from app.models.relationship import Relationship
 from app.schemas.relationship import RelationshipCreate, RelationshipResponse
 from app.schemas.person import PersonResponse
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
 from app.services.tree_service import compute_tree_layout, merge_persons
 from app.services.audit_service import write_audit
@@ -335,6 +336,7 @@ async def add_relationship(
             "type": rel.type,
         },
     )
+    await ws_manager.broadcast("relationship.created", {"relationship_id": str(rel.id)}, str(current_user.id))
     return rel
 
 
@@ -366,6 +368,7 @@ async def delete_relationship(
         entity_id=str(relationship_id),
         details=details,
     )
+    await ws_manager.broadcast("relationship.deleted", {"relationship_id": str(relationship_id)}, str(current_user.id))
 
 
 @router.post("/merge")
