@@ -278,6 +278,24 @@ def _layout_component(
         for pid in members:
             kids = [positions[c]["x"] for c in children_of[pid] if c in positions]
             desired.append(sum(kids) / len(kids) if kids else positions[pid]["x"])
+
+        # Childless siblings pull toward siblings who have children.
+        # Without this, a childless sibling of a spouse keeps its initial x
+        # while its sibling moves toward the couple's children, spreading the
+        # sibling group wide and making sibling connectors diagonal.
+        members_set = set(members)
+        for i, pid in enumerate(members):
+            if children_of[pid] & set(positions.keys()):
+                continue  # already anchored to children
+            sib_xs = [
+                desired[j]
+                for j, sib in enumerate(members)
+                if sib in siblings_of[pid] and (children_of[sib] & set(positions.keys()))
+            ]
+            if sib_xs:
+                # Blend: 70% sibling-anchor, 30% own position (keeps ordering stable)
+                desired[i] = 0.7 * (sum(sib_xs) / len(sib_xs)) + 0.3 * desired[i]
+
         for pid, x in zip(members, _place_row(desired, slot)):
             positions[pid]["x"] = x
 
