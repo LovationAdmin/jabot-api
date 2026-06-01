@@ -26,8 +26,10 @@ ALLOWED_IMAGE_TYPES = {
 }
 ALLOWED_AUDIO_TYPES = {
     "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/aac",
-    "audio/x-m4a", "audio/mp4",
+    "audio/x-m4a", "audio/mp4", "audio/webm",
 }
+# Base MIME types accepted for audio (codec params stripped before check)
+ALLOWED_AUDIO_BASE_TYPES = ALLOWED_AUDIO_TYPES
 
 
 @router.post("/upload", response_model=MediaResponse, status_code=status.HTTP_201_CREATED)
@@ -56,17 +58,18 @@ async def upload_media(
     if person_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
 
-    # Validate file type
-    content_type = file.content_type or ""
-    if media_type == "photo" and content_type not in ALLOWED_IMAGE_TYPES:
+    # Validate file type — strip codec params before matching (e.g. "audio/mp4;codecs=mp4a.40.2")
+    raw_ct = (file.content_type or "").strip()
+    base_ct = raw_ct.split(";")[0].strip().lower()
+    if media_type == "photo" and base_ct not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Type de fichier non supporté. Types acceptés: {', '.join(ALLOWED_IMAGE_TYPES)}",
         )
-    if media_type == "audio" and content_type not in ALLOWED_AUDIO_TYPES:
+    if media_type == "audio" and base_ct not in ALLOWED_AUDIO_BASE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Type de fichier audio non supporté. Types acceptés: {', '.join(ALLOWED_AUDIO_TYPES)}",
+            detail=f"Type de fichier audio non supporté. Types acceptés: {', '.join(sorted(ALLOWED_AUDIO_BASE_TYPES))}",
         )
 
     # Check count limit

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
+    # Invitations
+    # Mettre à True uniquement quand Vonage OTP est opérationnel.
+    INVITATION_ENABLED: bool = False
+
     # App
     FRONTEND_URL: str = "http://localhost:3000"
     ENVIRONMENT: str = "development"

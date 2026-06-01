@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routes import auth, persons, tree, media, audit, admin
+from app.routes import auth, persons, tree, media, audit, admin, invitations
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +57,7 @@ app.include_router(tree.router, prefix=f"{API_PREFIX}/tree", tags=["Arbre geneal
 app.include_router(media.router, prefix=f"{API_PREFIX}/media", tags=["Medias"])
 app.include_router(audit.router, prefix=API_PREFIX, tags=["Audit"])
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["Admin"])
+app.include_router(invitations.router, prefix=f"{API_PREFIX}/invitations", tags=["Invitations"])
 
 
 @app.get("/", tags=["Health"])
