@@ -210,7 +210,53 @@ def _layout_component(
                     generations[sib] = generations[pid]
                     changed = True
 
-    # Any remaining unvisited persons
+    # Pass 3: enforce parent strictly above child after passes 2/2b may have
+    # shifted generations. Propagate downward so the whole subtree stays consistent.
+    changed = True
+    while changed:
+        changed = False
+        for pid in pid_set:
+            p_gen = generations.get(pid)
+            if p_gen is None:
+                continue
+            for child_id in children_of[pid]:
+                c_gen = generations.get(child_id)
+                if c_gen is not None and c_gen <= p_gen:
+                    generations[child_id] = p_gen + 1
+                    changed = True
+
+    # Pass 4: generation inference from extended relationship types.
+    # Extended types (grandparent, uncle_aunt, etc.) are stored in the DB but
+    # ignored by the BFS. Any node reachable ONLY through these types gets
+    # placed at max_gen+1 by the fallback — wrong. We propagate from already-
+    # placed nodes to unplaced ones using the known generational offsets.
+    # Only fills in MISSING generations; never moves already-placed nodes.
+    B_OFFSET: Dict[str, int] = {
+        "grandparent": 2, "grandchild": -2,
+        "uncle_aunt": 1,  "nephew_niece": -1,
+        "step_parent": 1, "step_child": -1,
+        "cousin": 0,
+    }
+    changed = True
+    while changed:
+        changed = False
+        for r in relationships:
+            a, b = r.person_a_id, r.person_b_id
+            if a not in pid_set or b not in pid_set:
+                continue
+            offset = B_OFFSET.get(r.type)
+            if offset is None:
+                continue
+            a_placed = a in generations
+            b_placed = b in generations
+            if a_placed and not b_placed:
+                generations[b] = generations[a] + offset
+                changed = True
+            elif b_placed and not a_placed:
+                generations[a] = generations[b] - offset
+                changed = True
+
+    # Any remaining unvisited persons (truly isolated from all known types)
     max_gen = max(generations.values(), default=0)
     for p in persons:
         if p.id not in generations:
