@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 
 GENERATION_HEIGHT = 300   # px between generations
 NODE_WIDTH = 220           # px per node
-NODE_SPACING = 80          # horizontal gap between nodes within a family
-CLUSTER_SPACING = 240      # extra horizontal gap between disconnected family trees
+NODE_SPACING = 80          # horizontal gap between nodes within a family unit
+FAMILY_GAP = 130           # extra gap between distinct families on the same row
+CLUSTER_SPACING = 420      # gap between fully disconnected family trees
 
 
 async def compute_tree_layout(
@@ -354,7 +355,22 @@ def _layout_component(
                     target = primary
                 desired.append(target)
 
-            for pid, x in zip(members, _place_row(desired, slot)):
+            # Écart minimal entre voisins : `slot` au sein d'une même famille,
+            # élargi de FAMILY_GAP quand deux fiches adjacentes appartiennent à
+            # des familles distinctes (ni conjoints, ni parents communs) → les
+            # branches respirent sans se coller.
+            gaps: List[float] = []
+            for i in range(1, len(members)):
+                a, b = members[i - 1], members[i]
+                same_unit = (
+                    b in spouses_of[a]
+                    or a in spouses_of[b]
+                    or bool(parents_of[a] & parents_of[b])   # fratrie
+                    or a in parents_of[b] or b in parents_of[a]
+                )
+                gaps.append(slot if same_unit else slot + FAMILY_GAP)
+
+            for pid, x in zip(members, _place_row(desired, slot, gaps)):
                 moved += abs(positions[pid]["x"] - x)
                 positions[pid]["x"] = x
         return moved
@@ -371,30 +387,42 @@ def _layout_component(
     return list(positions.values())
 
 
-def _place_row(desired: List[float], slot: float) -> List[float]:
+def _place_row(
+    desired: List[float],
+    slot: float,
+    gaps: Optional[List[float]] = None,
+) -> List[float]:
     """
     Place une rangée de nœuds ordonnés au plus près des positions souhaitées
-    `desired`, en respectant l'ordre donné et un écart minimal `slot`.
+    `desired`, en respectant l'ordre donné et un écart minimal entre voisins.
+
+    L'écart minimal vaut `slot` par défaut, mais peut varier par paire via
+    `gaps` (gaps[i] = écart minimal entre members[i] et members[i+1]) — ce qui
+    permet d'élargir l'espace entre familles distinctes d'une même rangée.
 
     Méthode : régression isotone (PAVA — Pool Adjacent Violators). On cherche
-    les positions finales `xs` qui minimisent Σ(xs[i] − desired[i])² sous la
-    contrainte xs[i+1] − xs[i] ≥ slot. En posant y[i] = xs[i] − i·slot, la
-    contrainte devient « y non décroissant » → c'est exactement une régression
-    isotone des cibles t[i] = desired[i] − i·slot, résolue optimalement par
-    PAVA.
+    les positions finales `xs` minimisant Σ(xs[i] − desired[i])² sous la
+    contrainte xs[i] − xs[i−1] ≥ gaps[i−1]. En posant cum[i] = Σ des écarts
+    avant i, et y[i] = xs[i] − cum[i], la contrainte devient « y non
+    décroissant » → régression isotone des cibles t[i] = desired[i] − cum[i],
+    résolue optimalement par PAVA.
 
-    Pourquoi PAVA et pas un simple push + recentrage global : pousser à droite
-    puis décaler toute la rangée d'un même delta désaligne chaque sous-famille
-    par rapport à son couple parental dès qu'une génération contient plusieurs
-    branches. PAVA donne le déplacement minimal SANS décalage global : chaque
-    sous-arbre se cale sur son propre barycentre, d'où des descentes verticales
-    propres même sur 3+ générations.
+    Pourquoi PAVA et pas un push + recentrage global : pousser à droite puis
+    décaler toute la rangée d'un même delta désaligne chaque sous-famille par
+    rapport à son couple parental dès qu'une génération a plusieurs branches.
+    PAVA donne le déplacement minimal SANS décalage global : chaque sous-arbre
+    se cale sur son propre barycentre, d'où des descentes verticales propres.
     """
     n = len(desired)
     if n == 0:
         return []
+    # Écarts cumulés depuis le 1er nœud (cum[0] = 0).
+    cum = [0.0] * n
+    for i in range(1, n):
+        g = gaps[i - 1] if gaps is not None else slot
+        cum[i] = cum[i - 1] + g
     # Cibles normalisées : contrainte d'espacement → simple monotonie.
-    targets = [desired[i] - i * slot for i in range(n)]
+    targets = [desired[i] - cum[i] for i in range(n)]
     # PAVA : on empile des blocs [somme, effectif, moyenne] et on fusionne tant
     # que la moyenne du dernier bloc viole la monotonie (< bloc précédent).
     blocks: List[List[float]] = []
@@ -408,7 +436,7 @@ def _place_row(desired: List[float], slot: float) -> List[float]:
     y: List[float] = []
     for s, c, v in blocks:
         y.extend([v] * int(c))
-    return [y[i] + i * slot for i in range(n)]
+    return [y[i] + cum[i] for i in range(n)]
 
 
 def _reorder_spouses(
