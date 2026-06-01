@@ -272,24 +272,97 @@ def _reorder_spouses(
     spouses_of: Dict[uuid.UUID, Set[uuid.UUID]],
 ) -> List[uuid.UUID]:
     """
-    Reorder a list of person IDs so that spouses appear adjacent to each other.
-    Uses a greedy insertion approach.
-    """
-    result: List[uuid.UUID] = []
-    placed: Set[uuid.UUID] = set()
+    Réordonne une génération pour que les conjoints soient adjacents et qu'un
+    conjoint « pivot » (marié à plusieurs personnes) se retrouve ENTRE ses
+    conjoints.
 
-    for pid in pids:
-        if pid in placed:
+    Exemple clé : X marié à Y, et Z marié à Y. On veut [X, Y, Z] (Y au milieu)
+    et non [X, Y, …, Z]. Cela permet aux enfants du couple (X,Y) de se
+    regrouper à gauche et ceux du couple (Z,Y) à droite, puisque les enfants
+    sont ensuite triés par position moyenne de leurs parents.
+
+    Algorithme : on isole chaque composante de conjoints, puis on en fait un
+    parcours en chaîne (les paires et les chaînes X–Y–Z sont gérées
+    naturellement ; les configurations en étoile — polygamie à 3+ — placent le
+    pivot adjacent à tous ses conjoints).
+    """
+    in_set = set(pids)
+    adj: Dict[uuid.UUID, Set[uuid.UUID]] = {
+        p: {s for s in spouses_of.get(p, set()) if s in in_set} for p in pids
+    }
+
+    visited: Set[uuid.UUID] = set()
+    result: List[uuid.UUID] = []
+
+    for start in pids:
+        if start in visited:
             continue
-        result.append(pid)
-        placed.add(pid)
-        # Place any spouses immediately after
-        for spouse_id in spouses_of.get(pid, set()):
-            if spouse_id in pids and spouse_id not in placed:
-                result.append(spouse_id)
-                placed.add(spouse_id)
+
+        # Récupère toute la composante de conjoints reliée à `start`.
+        comp: List[uuid.UUID] = []
+        seen = {start}
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            comp.append(n)
+            for s in adj[n]:
+                if s not in seen:
+                    seen.add(s)
+                    stack.append(s)
+
+        if len(comp) == 1:
+            visited.add(start)
+            result.append(start)
+            continue
+
+        result.extend(_order_spouse_component(comp, adj))
+        visited.update(comp)
 
     return result
+
+
+def _order_spouse_component(
+    comp: List[uuid.UUID],
+    adj: Dict[uuid.UUID, Set[uuid.UUID]],
+) -> List[uuid.UUID]:
+    """
+    Ordonne une composante de conjoints en chaîne. Démarre de préférence depuis
+    un nœud de degré 1 (extrémité) pour que les pivots (degré ≥ 2) se
+    retrouvent au milieu : X–Y–Z → [X, Y, Z].
+    """
+    comp_set = set(comp)
+
+    # Extrémités = conjoints « simples » (un seul mariage dans la composante).
+    endpoints = [n for n in comp if len(adj[n] & comp_set) == 1]
+    start = endpoints[0] if endpoints else max(comp, key=lambda n: len(adj[n] & comp_set))
+
+    path = [start]
+    used = {start}
+    cur = start
+    while True:
+        nxts = [s for s in adj[cur] & comp_set if s not in used]
+        if not nxts:
+            break
+        # On continue par le conjoint le moins « ramifié » pour étendre la chaîne.
+        nxts.sort(key=lambda s: len(adj[s] & comp_set))
+        nxt = nxts[0]
+        path.append(nxt)
+        used.add(nxt)
+        cur = nxt
+
+    # Cas étoile (polygamie 3+) : on insère les conjoints restants juste à côté
+    # d'un conjoint déjà placé pour garder l'adjacence.
+    for n in comp:
+        if n in used:
+            continue
+        neighbor = next((s for s in adj[n] & comp_set if s in used), None)
+        if neighbor is None:
+            path.append(n)
+        else:
+            path.insert(path.index(neighbor) + 1, n)
+        used.add(n)
+
+    return path
 
 
 async def merge_persons(
