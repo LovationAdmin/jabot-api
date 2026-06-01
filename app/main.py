@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routes import auth, persons, tree, media, audit, admin
 
 logging.basicConfig(
@@ -28,6 +29,12 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Rate-limiting par IP (Redis). Ajouté EN PREMIER pour qu'il soit le plus
+# interne : Starlette exécute le dernier middleware ajouté en premier, donc le
+# CORS (ajouté juste après) enveloppe la réponse 429 et ajoute ses en-têtes —
+# sinon le navigateur masquerait l'erreur derrière un blocage CORS.
+app.add_middleware(RateLimitMiddleware)
 
 # CORS : on autorise le front configure (FRONTEND_URL) + le dev local, et via
 # regex le domaine custom jabotai.com (apex + tout sous-domaine : www, etc.)

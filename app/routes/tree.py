@@ -55,27 +55,38 @@ async def get_full_tree(
     layout = await compute_tree_layout(db, persons, relationships)
     layout_map = {item["person_id"]: item for item in layout}
 
+    # Confidentialité : un visiteur ANONYME ne reçoit que le prénom + le nom et
+    # la structure de l'arbre. Toutes les autres données (dates, genre, photos)
+    # sont réservées aux utilisateurs authentifiés. Ce masquage est fait CÔTÉ
+    # SERVEUR — le payload anonyme ne contient tout simplement pas ces champs,
+    # contrairement à un masquage purement visuel qui resterait scrapable.
+    is_auth = current_user is not None
+
     nodes = []
     for p in persons:
         pos = layout_map.get(str(p.id), {"x": 0, "y": 0, "generation": 0})
-        nodes.append({
+        data = {
             "id": str(p.id),
-            "type": "personNode",
-            "position": {"x": pos["x"], "y": pos["y"]},
-            "data": {
-                "id": str(p.id),
-                "first_name": p.first_name,
-                "last_name": p.last_name,
+            "first_name": p.first_name,
+            "last_name": p.last_name,
+            "generation": pos["generation"],
+        }
+        if is_auth:
+            data.update({
                 "gender": p.gender,
                 "birth_date": p.birth_date.isoformat() if p.birth_date else None,
                 "death_date": p.death_date.isoformat() if p.death_date else None,
-                "generation": pos["generation"],
                 "media": [
                     {"id": str(m.id), "type": m.type, "url": m.url}
                     for m in (p.media or [])
                     if m.type == "photo"
                 ][:1],
-            },
+            })
+        nodes.append({
+            "id": str(p.id),
+            "type": "personNode",
+            "position": {"x": pos["x"], "y": pos["y"]},
+            "data": data,
         })
 
     edges = []
@@ -96,6 +107,7 @@ async def get_full_tree(
 async def get_person_subtree(
     person_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """
     Retourne le sous-arbre centré sur une personne (3 générations: parents, personne, enfants).
@@ -142,22 +154,27 @@ async def get_person_subtree(
     layout = await compute_tree_layout(db, persons, all_rels)
     layout_map = {item["person_id"]: item for item in layout}
 
+    is_auth = current_user is not None
     nodes = []
     for p in persons:
         pos = layout_map.get(str(p.id), {"x": 0, "y": 0, "generation": 0})
+        data = {
+            "id": str(p.id),
+            "first_name": p.first_name,
+            "last_name": p.last_name,
+            "is_center": p.id == person_id,
+            "generation": pos["generation"],
+        }
+        if is_auth:
+            data.update({
+                "gender": p.gender,
+                "birth_date": p.birth_date.isoformat() if p.birth_date else None,
+            })
         nodes.append({
             "id": str(p.id),
             "type": "personNode",
             "position": {"x": pos["x"], "y": pos["y"]},
-            "data": {
-                "id": str(p.id),
-                "first_name": p.first_name,
-                "last_name": p.last_name,
-                "gender": p.gender,
-                "birth_date": p.birth_date.isoformat() if p.birth_date else None,
-                "is_center": p.id == person_id,
-                "generation": pos["generation"],
-            },
+            "data": data,
         })
 
     edges = []
