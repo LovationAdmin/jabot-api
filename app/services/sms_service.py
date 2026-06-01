@@ -100,8 +100,10 @@ async def send_sms(phone: str, message: str) -> bool:
         return await _send_vonage(phone, message)
     if _africas_talking_configured():
         return await _send_africas_talking(phone, message)
-    logger.info(f"[DEV] SMS to {phone}: {message}")
-    return True
+    # Aucun fournisseur configuré et pas en mode dev : on NE simule PAS un
+    # succès (sinon la route OTP croirait le SMS envoyé sans rien envoyer).
+    logger.error("Aucun fournisseur SMS configuré et SMS_DEV_MODE désactivé")
+    return False
 
 
 async def send_otp_sms(phone: str, otp_code: str) -> bool:

@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     # JWT
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_DAYS: int = 7
+    # 30 jours + session glissante (token reemis a chaque /me) => un
+    # utilisateur actif n'a jamais a refaire la validation OTP.
+    ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
     # Vonage SMS (fournisseur principal - couverture mondiale)
     VONAGE_API_KEY: str = ""
