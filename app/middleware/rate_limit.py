@@ -48,7 +48,9 @@ SPECIFIC_RULES: List[Rule] = [
     # Recherche : modérément strict (vecteur d'extraction de noms).
     Rule("/api/persons/search", limit=30, window=60, name="search_min"),
     # Arbre complet : le plus gros payload, principal vecteur de scraping.
-    Rule("/api/tree", limit=20, window=60, name="tree_min"),
+    # Limite relevée à 60 : le WebSocket sync déclenche loadTree sur chaque
+    # mutation distante, ce qui consomme rapidement le quota avec 20.
+    Rule("/api/tree", limit=60, window=60, name="tree_min"),
 ]
 
 # Limite globale par défaut (toute requête /api non couverte ci-dessus).
