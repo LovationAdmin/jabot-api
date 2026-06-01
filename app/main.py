@@ -7,7 +7,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routes import auth, persons, tree, media, audit, admin, invitations
+from app.routes import auth, persons, tree, media, audit, admin, invitations, ws
+from app.services.ws_manager import manager as ws_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +20,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Demarrage de l'application JABOT API")
+    await ws_manager.startup()
     yield
+    await ws_manager.shutdown()
     logger.info("Arret de l'application JABOT API")
 
 
@@ -58,6 +61,7 @@ app.include_router(media.router, prefix=f"{API_PREFIX}/media", tags=["Medias"])
 app.include_router(audit.router, prefix=API_PREFIX, tags=["Audit"])
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["Admin"])
 app.include_router(invitations.router, prefix=f"{API_PREFIX}/invitations", tags=["Invitations"])
+app.include_router(ws.router, prefix="/ws", tags=["WebSocket"])
 
 
 @app.get("/", tags=["Health"])

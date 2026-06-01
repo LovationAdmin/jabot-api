@@ -13,6 +13,7 @@ from app.schemas.media import MediaResponse
 from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.services.storage_service import upload_to_cloudinary, delete_from_cloudinary
+from app.services.ws_manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -131,6 +132,7 @@ async def upload_media(
     db.add(media_record)
     await db.commit()
     await db.refresh(media_record)
+    await ws_manager.broadcast("media.changed", {"person_id": str(person_id)}, str(current_user.id))
     return media_record
 
 
@@ -149,5 +151,7 @@ async def delete_media(
     # Delete from Cloudinary
     await delete_from_cloudinary(media_record.cloudinary_id, media_record.type)
 
+    pid = str(media_record.person_id)
     await db.delete(media_record)
     await db.commit()
+    await ws_manager.broadcast("media.changed", {"person_id": pid}, str(current_user.id))

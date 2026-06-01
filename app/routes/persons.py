@@ -15,6 +15,7 @@ from app.schemas.person import (
     SearchRequest, SearchMatch,
 )
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
 from app.services.search_service import search_persons
 from app.services.audit_service import write_audit
@@ -106,6 +107,7 @@ async def create_person(
         entity_id=str(person.id),
         details={"first_name": person.first_name, "last_name": person.last_name},
     )
+    await ws_manager.broadcast("person.created", {"person_id": str(person.id)}, str(current_user.id))
     return person
 
 
@@ -163,6 +165,7 @@ async def update_person(
         entity_id=str(person_id),
         details={"first_name": person.first_name, "last_name": person.last_name},
     )
+    await ws_manager.broadcast("person.updated", {"person_id": str(person_id)}, str(current_user.id))
     return person
 
 
@@ -191,6 +194,7 @@ async def delete_person(
         entity_id=str(person_id),
         details=details,
     )
+    await ws_manager.broadcast("person.deleted", {"person_id": str(person_id)}, str(current_user.id))
 
 
 @router.post("/search", response_model=List[SearchMatch])
