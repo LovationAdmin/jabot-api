@@ -264,40 +264,63 @@ def _layout_component(
         for i, pid in enumerate(members):
             positions[pid] = {"person_id": str(pid), "x": start_x + i * slot, "y": y, "generation": gen}
 
-    # ── Passage bottom-up : centrer les parents au-dessus de leurs enfants ──
+    # ── Raffinement itératif des coordonnées (Sugiyama / barycentre) ───────
     # Le placement top-down ne fait qu'ORDONNER les nœuds puis les tasse à
-    # gauche, ce qui rend les traits parent→enfant diagonaux. Ici, en
-    # remontant des enfants vers les ancêtres, on positionne chaque nœud au
-    # barycentre horizontal de ses enfants déjà placés. Un couple, dont les
-    # deux conjoints partagent les mêmes enfants, vise le même barycentre :
-    # _place_row les répartit symétriquement autour → le point de jonction
-    # tombe pile au-dessus du groupe d'enfants → descente verticale.
-    for gen in reversed(ordered_gens[:-1]):
-        members = gen_groups[gen]
-        desired = []
-        for pid in members:
-            kids = [positions[c]["x"] for c in children_of[pid] if c in positions]
-            desired.append(sum(kids) / len(kids) if kids else positions[pid]["x"])
+    # gauche : les traits parent→enfant sont diagonaux. Un SEUL passage
+    # bottom-up ne suffit pas dès qu'il y a 3+ générations — centrer les
+    # parents sur leurs enfants décale alors les grands-parents, et rien ne
+    # corrige en retour. On alterne donc des balayages montants (s'aligner sur
+    # les enfants) et descendants (s'aligner sur les parents), répétés jusqu'à
+    # convergence. L'ordre dans chaque génération reste fixe ; seul l'x bouge,
+    # _place_row garantissant l'espacement minimal.
+    keys_present = set(positions.keys())
 
-        # Childless siblings pull toward siblings who have children.
-        # Without this, a childless sibling of a spouse keeps its initial x
-        # while its sibling moves toward the couple's children, spreading the
-        # sibling group wide and making sibling connectors diagonal.
-        members_set = set(members)
-        for i, pid in enumerate(members):
-            if children_of[pid] & set(positions.keys()):
-                continue  # already anchored to children
-            sib_xs = [
-                desired[j]
-                for j, sib in enumerate(members)
-                if sib in siblings_of[pid] and (children_of[sib] & set(positions.keys()))
-            ]
-            if sib_xs:
-                # Blend: 70% sibling-anchor, 30% own position (keeps ordering stable)
-                desired[i] = 0.7 * (sum(sib_xs) / len(sib_xs)) + 0.3 * desired[i]
+    def _desired_from(pid: uuid.UUID, neighbors: Set[uuid.UUID]) -> Optional[float]:
+        xs = [positions[n]["x"] for n in neighbors if n in keys_present]
+        return sum(xs) / len(xs) if xs else None
 
-        for pid, x in zip(members, _place_row(desired, slot)):
-            positions[pid]["x"] = x
+    def _sweep(gens_order: List[int], use_children: bool) -> float:
+        """Un balayage. Renvoie le déplacement total (pour tester la convergence)."""
+        moved = 0.0
+        for gen in gens_order:
+            members = gen_groups[gen]
+            desired: List[float] = []
+            for pid in members:
+                # Cible primaire : barycentre des enfants (montant) ou des parents (descendant).
+                primary = _desired_from(pid, children_of[pid] if use_children else parents_of[pid])
+                # Le conjoint tire vers lui pour garder les couples soudés et
+                # centrer le nœud FAM ; un nœud sans enfant/parent suit son couple.
+                spouse_x = _desired_from(pid, spouses_of[pid])
+                # Un nœud « feuille » dans ce sens (ni cible primaire) s'accroche
+                # à sa fratrie déjà ancrée, sinon garde sa position.
+                if primary is None:
+                    sib_x = _desired_from(
+                        pid,
+                        {s for s in siblings_of[pid]
+                         if (children_of[s] if use_children else parents_of[s]) & keys_present},
+                    )
+                    target = sib_x if sib_x is not None else spouse_x
+                    target = target if target is not None else positions[pid]["x"]
+                elif spouse_x is not None:
+                    # Mélange enfants/parents (70%) et conjoint (30%) → couple aligné.
+                    target = 0.7 * primary + 0.3 * spouse_x
+                else:
+                    target = primary
+                desired.append(target)
+
+            for pid, x in zip(members, _place_row(desired, slot)):
+                moved += abs(positions[pid]["x"] - x)
+                positions[pid]["x"] = x
+        return moved
+
+    up_order = list(reversed(ordered_gens[:-1])) if len(ordered_gens) > 1 else []
+    down_order = ordered_gens[1:] if len(ordered_gens) > 1 else []
+
+    for _ in range(12):  # converge en pratique en 4-6 itérations
+        moved = _sweep(up_order, use_children=True)
+        moved += _sweep(down_order, use_children=False)
+        if moved < 1.0:  # stabilisé
+            break
 
     return list(positions.values())
 
