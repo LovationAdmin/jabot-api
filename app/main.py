@@ -64,12 +64,15 @@ app.include_router(invitations.router, prefix=f"{API_PREFIX}/invitations", tags=
 app.include_router(ws.router, prefix="/ws", tags=["WebSocket"])
 
 
-@app.get("/", tags=["Health"])
+# GET + HEAD : certaines sondes (Render port-scan, uptime checks) interrogent la
+# racine en HEAD ; sans cela elles reçoivent un 405 qui peut être interprété
+# comme un échec de health check et déclencher des redémarrages intempestifs.
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Health"])
 async def root():
     return {"message": "JABOT Genealogy API", "version": "1.0.0", "status": "ok"}
 
 
-@app.get("/health", tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
     return {"status": "healthy"}
 
