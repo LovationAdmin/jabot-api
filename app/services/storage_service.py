@@ -4,6 +4,7 @@ Cloudinary storage service for photos and audio clips.
 
 import logging
 import io
+import asyncio
 from typing import Optional, Dict, Any
 
 import cloudinary
@@ -69,7 +70,14 @@ async def upload_to_cloudinary(
             # Audio: keep original format
             upload_options["format"] = "mp3"
 
-        result = cloudinary.uploader.upload(
+        # cloudinary.uploader.upload est un appel RÉSEAU SYNCHRONE bloquant. Avec
+        # un seul worker uvicorn, l'exécuter directement gèle l'event loop pour
+        # toute la durée de l'upload (un audio de plusieurs Mo via mobile peut
+        # prendre des dizaines de secondes) : le health check Render expire et
+        # TOUTES les autres requêtes (dont GET /tree) restent bloquées. On
+        # l'exécute donc hors de l'event loop via un thread.
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
             io.BytesIO(file_content),
             **upload_options,
         )
@@ -101,7 +109,10 @@ async def delete_from_cloudinary(public_id: str, media_type: str) -> bool:
 
     try:
         resource_type = "image" if media_type == "photo" else "video"
-        result = cloudinary.uploader.destroy(public_id, resource_type=resource_type)
+        # Appel réseau synchrone bloquant → hors event loop (cf. upload).
+        result = await asyncio.to_thread(
+            cloudinary.uploader.destroy, public_id, resource_type=resource_type
+        )
         if result.get("result") == "ok":
             logger.info(f"Ressource Cloudinary supprimée: {public_id}")
             return True
