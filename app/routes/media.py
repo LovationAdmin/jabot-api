@@ -25,8 +25,8 @@ from app.services.tree_cache import invalidate_tree_cache
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-MAX_PHOTOS_PER_PERSON = 3
-MAX_AUDIOS_PER_PERSON = 3
+MAX_PHOTOS_PER_PERSON = 10
+MAX_AUDIOS_PER_PERSON = 10
 # Un vocal peut durer jusqu'à 45 min. À ~32 kbps mono (voix) ≈ 11 Mo, mais selon
 # le codec/navigateur le débit peut être plus élevé : on garde une marge large.
 MAX_AUDIO_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -186,6 +186,7 @@ async def sign_media_upload(
     if body.media_type not in ("photo", "audio"):
         raise HTTPException(status_code=400, detail="media_type doit être 'photo' ou 'audio'")
     if not is_configured():
+        logger.error("[sign] Cloudinary non configuré (CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET manquants)")
         raise HTTPException(status_code=503, detail="Stockage média non configuré")
 
     person_result = await db.execute(
