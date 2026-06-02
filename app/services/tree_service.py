@@ -36,13 +36,21 @@ FAMILY_GAP = 130           # extra gap between distinct families on the same row
 CLUSTER_SPACING = 420      # gap between fully disconnected family trees
 
 
-async def compute_tree_layout(
-    db: AsyncSession,
+def compute_tree_layout(
     persons: List[Person],
     relationships: List[Relationship],
 ) -> List[Dict]:
     """
     Assign x,y positions to each person for React Flow rendering.
+
+    Fonction PURE CPU (aucune I/O base) : Union-Find + balayages barycentre
+    itératifs + PAVA. Appelée sur CHAQUE GET /tree, sur un gros arbre elle peut
+    monopoliser plusieurs centaines de ms. Avec un seul worker uvicorn, cela
+    bloque l'event loop et fait expirer le health check Render (timeout 5 s) →
+    redémarrage de l'instance. Les appelants DOIVENT donc l'exécuter hors de
+    l'event loop via asyncio.to_thread(). On opère uniquement sur des attributs
+    déjà chargés des objets ORM (id, birth_date, first_name…), jamais de lazy
+    load, donc l'exécution en thread est sûre.
 
     Strategy: compute layout independently for each connected component, then
     place the components side-by-side (largest first) with CLUSTER_SPACING

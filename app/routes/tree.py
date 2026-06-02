@@ -1,4 +1,5 @@
 import uuid
+import asyncio
 import logging
 import unicodedata
 from difflib import SequenceMatcher
@@ -53,7 +54,9 @@ async def get_full_tree(
     relationships = rels_result.scalars().all()
 
     # Compute layout
-    layout = await compute_tree_layout(db, persons, relationships)
+    # Calcul de layout = pur CPU lourd : on l'exécute dans un thread pour ne pas
+    # bloquer l'event loop (sinon le health check Render expire → redémarrage).
+    layout = await asyncio.to_thread(compute_tree_layout, persons, relationships)
     layout_map = {item["person_id"]: item for item in layout}
 
     # Confidentialité : un visiteur ANONYME ne reçoit que le prénom + le nom et
@@ -152,7 +155,7 @@ async def get_person_subtree(
     )
     persons = persons_result.scalars().all()
 
-    layout = await compute_tree_layout(db, persons, all_rels)
+    layout = await asyncio.to_thread(compute_tree_layout, persons, all_rels)
     layout_map = {item["person_id"]: item for item in layout}
 
     is_auth = current_user is not None
@@ -487,32 +490,37 @@ async def detect_duplicates(
     )
     persons = persons_result.scalars().all()
 
-    pairs = []
-    for i in range(len(persons)):
-        for j in range(i + 1, len(persons)):
-            score = _duplicate_score(persons[i], persons[j])
-            if score >= 0.6:
-                a, b = persons[i], persons[j]
-                pairs.append({
-                    "person_a": {
-                        "id": str(a.id),
-                        "first_name": a.first_name,
-                        "last_name": a.last_name,
-                        "birth_date": a.birth_date.isoformat() if a.birth_date else None,
-                        "gender": a.gender,
-                    },
-                    "person_b": {
-                        "id": str(b.id),
-                        "first_name": b.first_name,
-                        "last_name": b.last_name,
-                        "birth_date": b.birth_date.isoformat() if b.birth_date else None,
-                        "gender": b.gender,
-                    },
-                    "score": round(score, 2),
-                    "confidence": "high" if score >= 0.85 else "medium",
-                })
+    # Comparaison O(n²) pure CPU : exécutée hors event loop (thread) pour ne pas
+    # bloquer le worker unique (et donc le health check Render) sur un gros arbre.
+    def _compute_pairs() -> list:
+        pairs = []
+        for i in range(len(persons)):
+            for j in range(i + 1, len(persons)):
+                score = _duplicate_score(persons[i], persons[j])
+                if score >= 0.6:
+                    a, b = persons[i], persons[j]
+                    pairs.append({
+                        "person_a": {
+                            "id": str(a.id),
+                            "first_name": a.first_name,
+                            "last_name": a.last_name,
+                            "birth_date": a.birth_date.isoformat() if a.birth_date else None,
+                            "gender": a.gender,
+                        },
+                        "person_b": {
+                            "id": str(b.id),
+                            "first_name": b.first_name,
+                            "last_name": b.last_name,
+                            "birth_date": b.birth_date.isoformat() if b.birth_date else None,
+                            "gender": b.gender,
+                        },
+                        "score": round(score, 2),
+                        "confidence": "high" if score >= 0.85 else "medium",
+                    })
+        pairs.sort(key=lambda x: x["score"], reverse=True)
+        return pairs
 
-    pairs.sort(key=lambda x: x["score"], reverse=True)
+    pairs = await asyncio.to_thread(_compute_pairs)
     return {"duplicates": pairs, "total": len(pairs)}
 
 
