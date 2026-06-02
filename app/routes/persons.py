@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.person import Person, CanvasPosition
+from app.models.media import Media
 from app.schemas.person import (
     PersonCreate, PersonUpdate, PersonResponse, PersonListResponse,
     SearchRequest, SearchMatch,
@@ -57,7 +58,7 @@ async def list_persons(
 
     result = await db.execute(
         select(Person)
-        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
         .where(Person.deleted_at.is_(None))
         .order_by(Person.created_at.desc())
         .offset(skip)
@@ -96,7 +97,7 @@ async def create_person(
     await db.commit()
     result = await db.execute(
         select(Person)
-        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
         .where(Person.id == person.id)
     )
     person = result.scalar_one()
@@ -122,7 +123,7 @@ async def get_person(
     """Récupère le détail d'une personne. Anonyme : prénom + nom uniquement."""
     result = await db.execute(
         select(Person)
-        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
         .where(Person.id == person_id, Person.deleted_at.is_(None))
     )
     person = result.scalar_one_or_none()
@@ -156,7 +157,7 @@ async def update_person(
     await db.commit()
     result = await db.execute(
         select(Person)
-        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
         .where(Person.id == person_id)
     )
     person = result.scalar_one()

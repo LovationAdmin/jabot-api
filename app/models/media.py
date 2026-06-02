@@ -22,11 +22,15 @@ class Media(Base):
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     file_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uploaded_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     person: Mapped["Person"] = relationship("Person", back_populates="media")
+    uploaded_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[uploaded_by_user_id], lazy="joined")
 
     __table_args__ = (
         CheckConstraint("type IN ('photo', 'audio')", name="chk_media_type"),

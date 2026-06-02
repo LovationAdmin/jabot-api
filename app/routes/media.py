@@ -137,13 +137,15 @@ async def upload_media(
         duration_seconds=upload_result.get("duration"),
         file_size_bytes=file_size,
         order_index=next_order,
+        uploaded_by_user_id=current_user.id,
     )
     db.add(media_record)
     await db.commit()
     await db.refresh(media_record)
     await invalidate_tree_cache()
     await ws_manager.broadcast("media.changed", {"person_id": str(person_id)}, str(current_user.id))
-    return media_record
+    from app.schemas.media import MediaResponse
+    return MediaResponse.from_orm_with_uploader(media_record)
 
 
 async def _check_count_limit(db: AsyncSession, person_id: uuid.UUID, media_type: str) -> None:
@@ -251,13 +253,15 @@ async def confirm_media_upload(
         duration_seconds=int(info.get("duration", 0)) or None,
         file_size_bytes=file_size,
         order_index=next_order,
+        uploaded_by_user_id=current_user.id,
     )
     db.add(media_record)
     await db.commit()
     await db.refresh(media_record)
     await invalidate_tree_cache()
     await ws_manager.broadcast("media.changed", {"person_id": str(body.person_id)}, str(current_user.id))
-    return media_record
+    from app.schemas.media import MediaResponse
+    return MediaResponse.from_orm_with_uploader(media_record)
 
 
 @router.delete("/{media_id}", status_code=status.HTTP_204_NO_CONTENT)

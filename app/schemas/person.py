@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 from typing import Optional, List, Any
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class CanvasPositionSchema(BaseModel):
@@ -17,8 +17,20 @@ class MediaResponseMinimal(BaseModel):
     type: str
     url: str
     order_index: int
+    duration_seconds: Optional[int] = None
+    uploader_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_uploader(cls, data: Any) -> Any:
+        if hasattr(data, "uploaded_by") and data.uploaded_by and data.uploaded_by.person:
+            p = data.uploaded_by.person
+            name = " ".join(x for x in [p.first_name, getattr(p, "last_name", None)] if x)
+            # inject into dict-like wrapper pydantic understands
+            data.__dict__.setdefault("uploader_name", name)
+        return data
 
 
 class PersonCreate(BaseModel):
