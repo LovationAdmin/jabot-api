@@ -19,18 +19,21 @@ router = APIRouter()
 
 
 @router.websocket("/tree")
-async def tree_ws(websocket: WebSocket, token: str = Query(default="")):
+async def tree_ws(websocket: WebSocket, token: str = Query(default=""), tree_id: str = Query(default="")):
     """
     Canal de synchronisation de l'arbre. Authentification par JWT en query param
     (les headers Authorization ne sont pas transmis par l'API WebSocket du
     navigateur). Une connexion non authentifiée est refusée.
+
+    `tree_id` (optionnel) : l'arbre observé par le client ; il ne recevra que
+    les événements de cet arbre.
     """
     payload = decode_token(token) if token else None
     if payload is None or not payload.get("sub"):
         await websocket.close(code=4401)  # 4401 = unauthorized (code applicatif)
         return
 
-    await manager.connect(websocket)
+    await manager.connect(websocket, tree_id or None)
     try:
         while True:
             # On garde la connexion ouverte. Les clients peuvent envoyer un ping

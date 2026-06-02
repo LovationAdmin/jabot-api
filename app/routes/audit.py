@@ -14,10 +14,11 @@ from app.models.audit import AuditLog
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
-async def _connected_person_ids(db: AsyncSession, root_person_id) -> set[str]:
-    """BFS over all relationships (both directions) from root person id."""
+async def _connected_person_ids(db: AsyncSession, root_person_id, tree_id) -> set[str]:
+    """BFS over relationships (both directions) from root person id, scoped to a tree."""
     result = await db.execute(
         select(Relationship.person_a_id, Relationship.person_b_id)
+        .where(Relationship.family_tree_id == tree_id)
     )
     adjacency: dict[str, set[str]] = {}
     for a, b in result.all():
@@ -63,7 +64,15 @@ async def my_tree_audit(
     if current_user.person_id is None:
         return {"entries": []}
 
-    component = await _connected_person_ids(db, current_user.person_id)
+    # Arbre de la fiche de l'utilisateur → on scope le journal à cet arbre.
+    p_res = await db.execute(
+        select(Person.family_tree_id).where(Person.id == current_user.person_id)
+    )
+    my_tree_id = p_res.scalar_one_or_none()
+    if my_tree_id is None:
+        return {"entries": []}
+
+    component = await _connected_person_ids(db, current_user.person_id, my_tree_id)
 
     # Fetch a generous window of recent audit rows, then filter in Python so
     # we can inspect JSON details for relationship/merge entries.

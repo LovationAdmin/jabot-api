@@ -16,6 +16,9 @@ from app.schemas.person import (
     SearchRequest, SearchMatch,
 )
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.middleware.tree_context import (
+    get_active_tree, get_active_tree_optional, TreeContext, require_can_write,
+)
 from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
 from app.services.search_service import search_persons
@@ -47,25 +50,31 @@ async def list_persons(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    ctx: Optional[TreeContext] = Depends(get_active_tree_optional),
 ):
-    """Liste toutes les personnes. Public, mais un visiteur anonyme ne reçoit
-    que le prénom + le nom (le reste est réservé aux utilisateurs connectés)."""
+    """Liste les personnes de l'arbre actif. Un visiteur (anonyme ou invité) ne
+    reçoit que le prénom + le nom ; les membres/propriétaires voient tout."""
+    if ctx is None:
+        return PersonListResponse(total=0, persons=[])
+    full = ctx.role in ("owner", "member")
+
     count_result = await db.execute(
-        select(func.count(Person.id)).where(Person.deleted_at.is_(None))
+        select(func.count(Person.id)).where(
+            Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id
+        )
     )
     total = count_result.scalar_one()
 
     result = await db.execute(
         select(Person)
         .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
-        .where(Person.deleted_at.is_(None))
+        .where(Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id)
         .order_by(Person.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
     persons = [PersonResponse.model_validate(p) for p in result.scalars().all()]
-    if current_user is None:
+    if not full:
         persons = [_mask_person(p) for p in persons]
     return PersonListResponse(total=total, persons=persons)
 
@@ -75,10 +84,13 @@ async def create_person(
     body: PersonCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """Crée une nouvelle personne dans l'arbre (authentification requise)."""
+    """Crée une nouvelle personne dans l'arbre actif (authentification requise)."""
+    require_can_write(ctx)
     person = Person(
         id=uuid.uuid4(),
+        family_tree_id=ctx.tree_id,
         first_name=body.first_name,
         last_name=body.last_name,
         nicknames=body.nicknames,
@@ -109,8 +121,8 @@ async def create_person(
         entity_id=str(person.id),
         details={"first_name": person.first_name, "last_name": person.last_name},
     )
-    await invalidate_tree_cache()
-    await ws_manager.broadcast("person.created", {"person_id": str(person.id)}, str(current_user.id))
+    await invalidate_tree_cache(str(ctx.tree_id))
+    await ws_manager.broadcast("person.created", {"person_id": str(person.id)}, str(current_user.id), tree_id=str(ctx.tree_id))
     return person
 
 
@@ -118,19 +130,21 @@ async def create_person(
 async def get_person(
     person_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    ctx: Optional[TreeContext] = Depends(get_active_tree_optional),
 ):
-    """Récupère le détail d'une personne. Anonyme : prénom + nom uniquement."""
+    """Récupère le détail d'une personne de l'arbre actif. Visiteur : prénom + nom."""
+    if ctx is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
     result = await db.execute(
         select(Person)
         .options(selectinload(Person.canvas_position), selectinload(Person.media).selectinload(Media.uploaded_by).selectinload(User.person))
-        .where(Person.id == person_id, Person.deleted_at.is_(None))
+        .where(Person.id == person_id, Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id)
     )
     person = result.scalar_one_or_none()
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
     resp = PersonResponse.model_validate(person)
-    return resp if current_user else _mask_person(resp)
+    return resp if ctx.role in ("owner", "member") else _mask_person(resp)
 
 
 @router.put("/{person_id}", response_model=PersonResponse)
@@ -139,10 +153,15 @@ async def update_person(
     body: PersonUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """Met à jour une personne (authentification requise)."""
+    """Met à jour une personne de l'arbre actif (authentification requise)."""
+    require_can_write(ctx)
     result = await db.execute(
-        select(Person).where(Person.id == person_id, Person.deleted_at.is_(None))
+        select(Person).where(
+            Person.id == person_id, Person.deleted_at.is_(None),
+            Person.family_tree_id == ctx.tree_id,
+        )
     )
     person = result.scalar_one_or_none()
     if person is None:
@@ -173,8 +192,8 @@ async def update_person(
             "changed_fields": changed_fields,
         },
     )
-    await invalidate_tree_cache()
-    await ws_manager.broadcast("person.updated", {"person_id": str(person_id)}, str(current_user.id))
+    await invalidate_tree_cache(str(ctx.tree_id))
+    await ws_manager.broadcast("person.updated", {"person_id": str(person_id)}, str(current_user.id), tree_id=str(ctx.tree_id))
     return person
 
 
@@ -183,10 +202,15 @@ async def delete_person(
     person_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """Suppression douce d'une personne (authentification requise)."""
+    """Suppression douce d'une personne de l'arbre actif (authentification requise)."""
+    require_can_write(ctx)
     result = await db.execute(
-        select(Person).where(Person.id == person_id, Person.deleted_at.is_(None))
+        select(Person).where(
+            Person.id == person_id, Person.deleted_at.is_(None),
+            Person.family_tree_id == ctx.tree_id,
+        )
     )
     person = result.scalar_one_or_none()
     if person is None:
@@ -203,8 +227,8 @@ async def delete_person(
         entity_id=str(person_id),
         details=details,
     )
-    await invalidate_tree_cache()
-    await ws_manager.broadcast("person.deleted", {"person_id": str(person_id)}, str(current_user.id))
+    await invalidate_tree_cache(str(ctx.tree_id))
+    await ws_manager.broadcast("person.deleted", {"person_id": str(person_id)}, str(current_user.id), tree_id=str(ctx.tree_id))
 
 
 @router.post("/search", response_model=List[SearchMatch])

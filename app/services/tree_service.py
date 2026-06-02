@@ -669,6 +669,16 @@ async def merge_persons(
         if src_pos:
             src_pos.person_id = target_id
 
+    # Repointer les utilisateurs dont la fiche (person_id) était la source :
+    # sinon leur lien « ma fiche » casserait après la fusion.
+    from app.models.user import User as UserModel
+    from sqlalchemy import update as _sql_update
+    await db.execute(
+        _sql_update(UserModel)
+        .where(UserModel.person_id == source_id)
+        .values(person_id=target_id)
+    )
+
     # Soft-delete source
     source.deleted_at = datetime.now(timezone.utc)
 

@@ -12,6 +12,10 @@ class Relationship(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    family_tree_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("family_trees.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
     person_a_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("persons.id"), nullable=False
     )
@@ -31,7 +35,7 @@ class Relationship(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("person_a_id", "person_b_id", "type", name="uq_relationship"),
+        UniqueConstraint("family_tree_id", "person_a_id", "person_b_id", "type", name="uq_relationship_per_tree"),
         CheckConstraint(
             "type IN ('parent', 'child', 'sibling', 'spouse', "
             "'half_sibling', 'step_sibling', 'step_parent', 'step_child', 'homonym', "

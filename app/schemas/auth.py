@@ -39,6 +39,13 @@ class OTPVerify(BaseModel):
         return v
 
 
+class TreeAccessItem(BaseModel):
+    tree_id: str
+    tree_name: str
+    role: str
+    created_at: Optional[str] = None
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -47,6 +54,9 @@ class Token(BaseModel):
     # person_id non nul => l'utilisateur a deja fait son onboarding.
     person_id: Optional[str] = None
     onboarded: bool = False
+    # Arbres auxquels l'utilisateur a accès + arbre actif par défaut.
+    tree_accesses: list[TreeAccessItem] = []
+    active_tree_id: Optional[str] = None
 
 
 class MeResponse(BaseModel):
@@ -57,8 +67,12 @@ class MeResponse(BaseModel):
     # Token reemis (session glissante) : le frontend le stocke pour repousser
     # l'expiration. Absent si rien a renouveler.
     access_token: Optional[str] = None
+    tree_accesses: list[TreeAccessItem] = []
+    active_tree_id: Optional[str] = None
 
 
 class LinkPersonRequest(BaseModel):
     """C'est moi : rattache l'utilisateur a une fiche existante du canvas."""
     person_id: uuid.UUID
+    # Arbre où se trouve la fiche (multi-arbre). Optionnel : déduit de la fiche.
+    tree_id: Optional[uuid.UUID] = None

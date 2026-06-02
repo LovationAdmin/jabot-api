@@ -16,6 +16,10 @@ class Person(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    family_tree_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("family_trees.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     nicknames: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)

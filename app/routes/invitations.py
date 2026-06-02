@@ -20,6 +20,7 @@ from app.database import get_db
 from app.models.invitation import Invitation
 from app.models.user import User
 from app.middleware.auth import get_current_user
+from app.middleware.tree_context import get_active_tree, TreeContext, require_can_write
 from app.security.crypto import phone_hash
 from app.config import settings
 
@@ -117,9 +118,11 @@ async def create_invitation(
     body: CreateInvitationRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """Crée une invitation pour un numéro de téléphone (owner uniquement)."""
+    """Crée une invitation pour un numéro (tout membre/propriétaire de l'arbre)."""
     _check_enabled()
+    require_can_write(ctx)  # visiteurs ne peuvent pas inviter
 
     phone_clean = body.phone.strip()
     if not phone_clean.startswith("+"):
@@ -151,6 +154,7 @@ async def create_invitation(
         invited_phone=phone_clean,
         invited_phone_hash=p_hash,
         inviter_user_id=current_user.id,
+        family_tree_id=ctx.tree_id,
         status="pending",
         expires_at=expires_at,
     )

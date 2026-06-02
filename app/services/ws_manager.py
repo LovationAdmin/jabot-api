@@ -33,7 +33,10 @@ class ConnectionManager:
     """Gère les connexions WebSocket locales + le relais via Redis pub/sub."""
 
     def __init__(self) -> None:
-        self._connections: Set[WebSocket] = set()
+        # Connexions groupées par arbre (room). Une connexion sans arbre connu
+        # est rangée sous la clé "" (diffusion globale héritée).
+        self._rooms: dict[str, Set[WebSocket]] = {}
+        self._ws_room: dict[WebSocket, str] = {}
         self._lock = asyncio.Lock()
         self._redis: Optional[aioredis.Redis] = None
         self._pubsub_task: Optional[asyncio.Task] = None
@@ -52,8 +55,9 @@ class ConnectionManager:
         # l'arrêt graceful d'uvicorn (sinon Render attend le timeout complet à
         # chaque redéploiement, ce qui ralentit fortement les déploiements).
         async with self._lock:
-            sockets = list(self._connections)
-            self._connections.clear()
+            sockets = list(self._ws_room.keys())
+            self._rooms.clear()
+            self._ws_room.clear()
         for ws in sockets:
             try:
                 await ws.close(code=1001)  # 1001 = going away
@@ -74,14 +78,20 @@ class ConnectionManager:
             except Exception:
                 pass
 
-    async def connect(self, ws: WebSocket) -> None:
+    async def connect(self, ws: WebSocket, tree_id: Optional[str] = None) -> None:
         await ws.accept()
+        room = tree_id or ""
         async with self._lock:
-            self._connections.add(ws)
+            self._rooms.setdefault(room, set()).add(ws)
+            self._ws_room[ws] = room
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
-            self._connections.discard(ws)
+            room = self._ws_room.pop(ws, None)
+            if room is not None and room in self._rooms:
+                self._rooms[room].discard(ws)
+                if not self._rooms[room]:
+                    del self._rooms[room]
 
     async def _listen_redis(self) -> None:
         """Boucle d'écoute Redis : relaie les événements aux connexions locales."""
@@ -99,9 +109,22 @@ class ConnectionManager:
             logger.warning(f"WebSocket: écoute Redis interrompue ({exc})")
 
     async def _broadcast_local(self, payload: str) -> None:
-        """Envoie le payload (string JSON) à toutes les connexions de ce process."""
+        """Envoie le payload (string JSON) aux connexions concernées de ce process.
+
+        Le payload contient un `tree_id` : seules les connexions de cette room
+        (plus celles sans arbre connu, room "") reçoivent l'événement. Si le
+        payload n'a pas de tree_id, on diffuse à tout le monde (héritage).
+        """
+        try:
+            tree_id = json.loads(payload).get("tree_id")
+        except Exception:
+            tree_id = None
+
         async with self._lock:
-            targets = list(self._connections)
+            if tree_id:
+                targets = list(self._rooms.get(str(tree_id), set())) + list(self._rooms.get("", set()))
+            else:
+                targets = [ws for conns in self._rooms.values() for ws in conns]
         dead: list[WebSocket] = []
         for ws in targets:
             try:
@@ -114,10 +137,13 @@ class ConnectionManager:
         if dead:
             async with self._lock:
                 for ws in dead:
-                    self._connections.discard(ws)
+                    room = self._ws_room.pop(ws, None)
+                    if room is not None and room in self._rooms:
+                        self._rooms[room].discard(ws)
 
     async def broadcast(self, event_type: str, data: Optional[dict] = None,
-                        origin_user_id: Optional[str] = None) -> None:
+                        origin_user_id: Optional[str] = None,
+                        tree_id: Optional[str] = None) -> None:
         """
         Publie un événement de mutation. Diffusé localement immédiatement, et
         publié sur Redis pour les autres instances.
@@ -125,11 +151,13 @@ class ConnectionManager:
         event_type : "person.created", "person.updated", "person.deleted",
                      "relationship.created", "relationship.deleted", "media.changed"…
         origin_user_id : auteur de la mutation (le client peut s'ignorer lui-même).
+        tree_id : arbre concerné — seuls les clients de cette room sont notifiés.
         """
         payload = json.dumps({
             "type": event_type,
             "data": data or {},
             "origin": origin_user_id,
+            "tree_id": tree_id,
         })
         # Si Redis est disponible, on publie UNIQUEMENT sur le canal : la boucle
         # d'écoute (_listen_redis) se charge de la diffusion locale, ce qui évite

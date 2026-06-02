@@ -16,6 +16,9 @@ from app.models.relationship import Relationship
 from app.schemas.relationship import RelationshipCreate, RelationshipResponse
 from app.schemas.person import PersonResponse
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.middleware.tree_context import (
+    get_active_tree, get_active_tree_optional, TreeContext, require_can_write,
+)
 from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
 from app.services.tree_service import compute_tree_layout, merge_persons
@@ -37,28 +40,35 @@ router = APIRouter()
 @router.get("")
 async def get_full_tree(
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    ctx: Optional[TreeContext] = Depends(get_active_tree_optional),
 ):
     """
     Retourne l'arbre complet: noeuds (personnes) + arêtes (relations) pour React Flow.
-    Accessible sans authentification (visiteur anonyme). Si un token valide est fourni,
-    l'utilisateur est identifié (current_user non None).
+    Scopé à l'arbre actif. Accessible sans authentification (visiteur anonyme) ;
+    un token valide débloque les champs sensibles.
     """
-    is_auth = current_user is not None
+    if ctx is None:
+        return {"nodes": [], "edges": []}
 
-    # Retour du cache Redis (évite N déchiffrements Fernet + layout CPU).
-    cached = await get_tree_cache(is_auth)
+    tree_id = ctx.tree_id
+    # is_auth ici = a-t-on le droit aux champs sensibles. Un visiteur (invité ou
+    # anonyme) ne reçoit que prénom + nom ; un membre/propriétaire voit tout.
+    is_auth = ctx.role in ("owner", "member")
+
+    cached = await get_tree_cache(str(tree_id), is_auth)
     if cached is not None:
         return cached
 
     persons_result = await db.execute(
         select(Person)
         .options(selectinload(Person.media))
-        .where(Person.deleted_at.is_(None))
+        .where(Person.deleted_at.is_(None), Person.family_tree_id == tree_id)
     )
     persons = persons_result.scalars().all()
 
-    rels_result = await db.execute(select(Relationship))
+    rels_result = await db.execute(
+        select(Relationship).where(Relationship.family_tree_id == tree_id)
+    )
     relationships = rels_result.scalars().all()
 
     # Calcul de layout = pur CPU lourd : on l'exécute dans un thread pour ne pas
@@ -66,11 +76,6 @@ async def get_full_tree(
     layout = await asyncio.to_thread(compute_tree_layout, persons, relationships)
     layout_map = {item["person_id"]: item for item in layout}
 
-    # Confidentialité : un visiteur ANONYME ne reçoit que le prénom + le nom et
-    # la structure de l'arbre. Toutes les autres données (dates, genre, photos)
-    # sont réservées aux utilisateurs authentifiés. Ce masquage est fait CÔTÉ
-    # SERVEUR — le payload anonyme ne contient tout simplement pas ces champs,
-    # contrairement à un masquage purement visuel qui resterait scrapable.
     nodes = []
     for p in persons:
         pos = layout_map.get(str(p.id), {"x": 0, "y": 0, "generation": 0})
@@ -110,7 +115,7 @@ async def get_full_tree(
         })
 
     response = {"nodes": nodes, "edges": edges}
-    await set_tree_cache(is_auth, response)
+    await set_tree_cache(str(tree_id), is_auth, response)
     return response
 
 
@@ -118,24 +123,32 @@ async def get_full_tree(
 async def get_person_subtree(
     person_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    ctx: Optional[TreeContext] = Depends(get_active_tree_optional),
 ):
     """
     Retourne le sous-arbre centré sur une personne (3 générations: parents, personne, enfants).
     """
-    # Check person exists
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="Aucun arbre")
+    tree_id = ctx.tree_id
+
+    # Check person exists in this tree
     p_result = await db.execute(
-        select(Person).where(Person.id == person_id, Person.deleted_at.is_(None))
+        select(Person).where(
+            Person.id == person_id, Person.deleted_at.is_(None),
+            Person.family_tree_id == tree_id,
+        )
     )
     center = p_result.scalar_one_or_none()
     if center is None:
         raise HTTPException(status_code=404, detail="Personne introuvable")
 
-    # Find all related person IDs within 2 hops
+    # Find all related person IDs within 2 hops (scoped to this tree)
     related_ids = {person_id}
     rels_result = await db.execute(
         select(Relationship).where(
-            or_(Relationship.person_a_id == person_id, Relationship.person_b_id == person_id)
+            Relationship.family_tree_id == tree_id,
+            or_(Relationship.person_a_id == person_id, Relationship.person_b_id == person_id),
         )
     )
     direct_rels = rels_result.scalars().all()
@@ -146,10 +159,11 @@ async def get_person_subtree(
     # Second hop
     second_hop_rels_result = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             or_(
                 Relationship.person_a_id.in_(related_ids),
                 Relationship.person_b_id.in_(related_ids),
-            )
+            ),
         )
     )
     all_rels = second_hop_rels_result.scalars().all()
@@ -165,7 +179,7 @@ async def get_person_subtree(
     layout = await asyncio.to_thread(compute_tree_layout, persons, all_rels)
     layout_map = {item["person_id"]: item for item in layout}
 
-    is_auth = current_user is not None
+    is_auth = ctx.role in ("owner", "member")
     nodes = []
     for p in persons:
         pos = layout_map.get(str(p.id), {"x": 0, "y": 0, "generation": 0})
@@ -202,34 +216,38 @@ async def get_person_subtree(
     return {"nodes": nodes, "edges": edges, "center_id": str(person_id)}
 
 
-async def _safe_add_rel(db: AsyncSession, a_id: uuid.UUID, b_id: uuid.UUID, rel_type: str) -> None:
-    """Crée une relation si elle n'existe pas déjà et que A ≠ B."""
+async def _safe_add_rel(
+    db: AsyncSession, tree_id: uuid.UUID, a_id: uuid.UUID, b_id: uuid.UUID, rel_type: str
+) -> None:
+    """Crée une relation si elle n'existe pas déjà et que A ≠ B (dans cet arbre)."""
     if a_id == b_id:
         return
     existing = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             Relationship.person_a_id == a_id,
             Relationship.person_b_id == b_id,
             Relationship.type == rel_type,
         )
     )
     if existing.scalar_one_or_none() is None:
-        db.add(Relationship(id=uuid.uuid4(), person_a_id=a_id, person_b_id=b_id, type=rel_type))
+        db.add(Relationship(
+            id=uuid.uuid4(), family_tree_id=tree_id,
+            person_a_id=a_id, person_b_id=b_id, type=rel_type,
+        ))
 
 
 async def _deduce_from_new_parent_link(
-    db: AsyncSession, parent_id: uuid.UUID, child_id: uuid.UUID
+    db: AsyncSession, tree_id: uuid.UUID, parent_id: uuid.UUID, child_id: uuid.UUID
 ) -> None:
     """
     Quand parent_id → child_id (type parent) vient d'être créé :
-    a) Fratrie : child_id devient frère/sœur de tous les autres enfants
-       de parent_id (liens sibling dans les deux sens).
-    b) Grands-parents : les parents de parent_id deviennent grands-parents
-       de child_id (lien grandparent).
+    a) Fratrie : child_id devient frère/sœur de tous les autres enfants de parent_id.
+    b) Grands-parents : les parents de parent_id deviennent grands-parents de child_id.
     """
-    # a) Autres enfants de ce parent → fratrie avec child_id
     siblings_result = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             Relationship.person_a_id == parent_id,
             Relationship.person_b_id != child_id,
             Relationship.type == "parent",
@@ -237,29 +255,30 @@ async def _deduce_from_new_parent_link(
     )
     for sib_rel in siblings_result.scalars().all():
         sib_id = sib_rel.person_b_id
-        await _safe_add_rel(db, child_id, sib_id, "sibling")
-        await _safe_add_rel(db, sib_id, child_id, "sibling")
+        await _safe_add_rel(db, tree_id, child_id, sib_id, "sibling")
+        await _safe_add_rel(db, tree_id, sib_id, child_id, "sibling")
 
-    # b) Parents du parent → grands-parents de child_id
     grandparents_result = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             Relationship.person_b_id == parent_id,
             Relationship.type == "parent",
         )
     )
     for gp_rel in grandparents_result.scalars().all():
         gp_id = gp_rel.person_a_id
-        await _safe_add_rel(db, gp_id, child_id, "grandparent")
+        await _safe_add_rel(db, tree_id, gp_id, child_id, "grandparent")
 
     await db.commit()
 
 
 async def _propagate_parents_to_sibling(
-    db: AsyncSession, source_id: uuid.UUID, target_id: uuid.UUID
+    db: AsyncSession, tree_id: uuid.UUID, source_id: uuid.UUID, target_id: uuid.UUID
 ) -> None:
-    """Copie les liens parent→source vers parent→target (sans doublon)."""
+    """Copie les liens parent→source vers parent→target (sans doublon, même arbre)."""
     parents_result = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             Relationship.person_b_id == source_id,
             Relationship.type == "parent",
         )
@@ -270,13 +289,17 @@ async def _propagate_parents_to_sibling(
             continue
         already = await db.execute(
             select(Relationship).where(
+                Relationship.family_tree_id == tree_id,
                 Relationship.person_a_id == parent_id,
                 Relationship.person_b_id == target_id,
                 Relationship.type == "parent",
             )
         )
         if already.scalar_one_or_none() is None:
-            db.add(Relationship(id=uuid.uuid4(), person_a_id=parent_id, person_b_id=target_id, type="parent"))
+            db.add(Relationship(
+                id=uuid.uuid4(), family_tree_id=tree_id,
+                person_a_id=parent_id, person_b_id=target_id, type="parent",
+            ))
     await db.commit()
 
 
@@ -285,22 +308,30 @@ async def add_relationship(
     body: RelationshipCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """Ajoute une relation entre deux personnes (authentification requise)."""
+    """Ajoute une relation entre deux personnes du même arbre (auth requise)."""
+    require_can_write(ctx)
+    tree_id = ctx.tree_id
+
     if body.person_a_id == body.person_b_id:
         raise HTTPException(status_code=400, detail="Une personne ne peut pas être en relation avec elle-même")
 
-    # Verify both persons exist
+    # Verify both persons exist AND belong to this tree (no cross-tree links)
     for pid in [body.person_a_id, body.person_b_id]:
         res = await db.execute(
-            select(Person).where(Person.id == pid, Person.deleted_at.is_(None))
+            select(Person).where(
+                Person.id == pid, Person.deleted_at.is_(None),
+                Person.family_tree_id == tree_id,
+            )
         )
         if res.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail=f"Personne {pid} introuvable")
+            raise HTTPException(status_code=404, detail=f"Personne {pid} introuvable dans cet arbre")
 
-    # Check duplicate
+    # Check duplicate (scoped to tree)
     existing = await db.execute(
         select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
             Relationship.person_a_id == body.person_a_id,
             Relationship.person_b_id == body.person_b_id,
             Relationship.type == body.type,
@@ -311,6 +342,7 @@ async def add_relationship(
 
     rel = Relationship(
         id=uuid.uuid4(),
+        family_tree_id=tree_id,
         person_a_id=body.person_a_id,
         person_b_id=body.person_b_id,
         type=body.type,
@@ -319,18 +351,13 @@ async def add_relationship(
     await db.commit()
     await db.refresh(rel)
 
-    # ── Déduction automatique des liens de parenté ──────────────────
-    # 1. Fratrie → propager les parents de A vers B et vice-versa.
+    # ── Déduction automatique des liens de parenté (scopée à l'arbre) ──
     if rel.type == "sibling":
-        await _propagate_parents_to_sibling(db, rel.person_a_id, rel.person_b_id)
-        await _propagate_parents_to_sibling(db, rel.person_b_id, rel.person_a_id)
+        await _propagate_parents_to_sibling(db, tree_id, rel.person_a_id, rel.person_b_id)
+        await _propagate_parents_to_sibling(db, tree_id, rel.person_b_id, rel.person_a_id)
 
-    # 2. Nouveau parent → créer automatiquement:
-    #    a) lien "sibling" entre le nouvel enfant (B) et tous les autres
-    #       enfants du parent (A) → fratrie déduite.
-    #    b) lien "grandparent" entre les parents du parent (A) et l'enfant (B).
     if rel.type == "parent":
-        await _deduce_from_new_parent_link(db, parent_id=rel.person_a_id, child_id=rel.person_b_id)
+        await _deduce_from_new_parent_link(db, tree_id, parent_id=rel.person_a_id, child_id=rel.person_b_id)
 
     await write_audit(
         db,
@@ -346,8 +373,8 @@ async def add_relationship(
             "type": rel.type,
         },
     )
-    await invalidate_tree_cache()
-    await ws_manager.broadcast("relationship.created", {"relationship_id": str(rel.id)}, str(current_user.id))
+    await invalidate_tree_cache(str(tree_id))
+    await ws_manager.broadcast("relationship.created", {"relationship_id": str(rel.id)}, str(current_user.id), tree_id=str(tree_id))
     return rel
 
 
@@ -356,9 +383,16 @@ async def delete_relationship(
     relationship_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
     """Supprime une relation (authentification requise)."""
-    result = await db.execute(select(Relationship).where(Relationship.id == relationship_id))
+    require_can_write(ctx)
+    result = await db.execute(
+        select(Relationship).where(
+            Relationship.id == relationship_id,
+            Relationship.family_tree_id == ctx.tree_id,
+        )
+    )
     rel = result.scalar_one_or_none()
     if rel is None:
         raise HTTPException(status_code=404, detail="Relation introuvable")
@@ -379,8 +413,8 @@ async def delete_relationship(
         entity_id=str(relationship_id),
         details=details,
     )
-    await invalidate_tree_cache()
-    await ws_manager.broadcast("relationship.deleted", {"relationship_id": str(relationship_id)}, str(current_user.id))
+    await invalidate_tree_cache(str(ctx.tree_id))
+    await ws_manager.broadcast("relationship.deleted", {"relationship_id": str(relationship_id)}, str(current_user.id), tree_id=str(ctx.tree_id))
 
 
 @router.post("/merge")
@@ -388,11 +422,12 @@ async def merge_family_branches(
     body: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
     """
-    Fusionne deux branches familiales quand des personnes liées sont trouvées.
-    Détecte les doublons, fusionne les données, met à jour toutes les relations.
+    Fusionne deux personnes (doublons) du même arbre.
     """
+    require_can_write(ctx)
     source_id_str = body.get("source_person_id")
     target_id_str = body.get("target_person_id")
 
@@ -408,10 +443,18 @@ async def merge_family_branches(
     if source_id == target_id:
         raise HTTPException(status_code=400, detail="Impossible de fusionner une personne avec elle-même")
 
+    # Les deux personnes doivent appartenir à l'arbre actif.
+    for pid in (source_id, target_id):
+        res = await db.execute(
+            select(Person).where(Person.id == pid, Person.family_tree_id == ctx.tree_id)
+        )
+        if res.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Personne introuvable dans cet arbre")
+
     source_name = await _person_name(db, source_id)
     target_name = await _person_name(db, target_id)
     result = await merge_persons(db, source_id, target_id)
-    await invalidate_tree_cache()
+    await invalidate_tree_cache(str(ctx.tree_id))
     await write_audit(
         db,
         actor_user_id=current_user.id,
@@ -441,19 +484,7 @@ def _duplicate_score(a: Person, b: Person) -> float:
     """
     Retourne un score 0-1 indiquant la probabilité que deux personnes soient
     le même individu.
-
-    Règles d'élimination strictes (retour immédiat à 0) :
-    - Les deux ont un nom de famille et ils diffèrent → impossible
-    - Les deux ont une date de naissance et les années diffèrent → impossible
-
-    Scoring positif :
-    - Prénom identique (normalisé) = base 0.70
-    - Prénom similaire (≥ 0.80 SequenceMatcher) = base proportionnelle
-    - Même année de naissance → +0.20
-    - Date exacte identique → +0.10 supplémentaire
-    - Même genre → +0.05
     """
-    # Éliminations strictes
     ln_a = _normalize(a.last_name or "")
     ln_b = _normalize(b.last_name or "")
     if ln_a and ln_b and ln_a != ln_b:
@@ -462,7 +493,6 @@ def _duplicate_score(a: Person, b: Person) -> float:
     if a.birth_date and b.birth_date and a.birth_date.year != b.birth_date.year:
         return 0.0
 
-    # Comparer uniquement les prénoms
     fn_a = _normalize(a.first_name or "")
     fn_b = _normalize(b.first_name or "")
     if not fn_a or not fn_b:
@@ -472,7 +502,7 @@ def _duplicate_score(a: Person, b: Person) -> float:
     if fn_sim < 0.80:
         return 0.0
 
-    score = 0.50 + fn_sim * 0.30  # 0.74 → 0.80 selon similarité
+    score = 0.50 + fn_sim * 0.30
 
     if a.birth_date and b.birth_date:
         if a.birth_date.year == b.birth_date.year:
@@ -490,18 +520,16 @@ def _duplicate_score(a: Person, b: Person) -> float:
 async def detect_duplicates(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """
-    Détecte les doublons potentiels dans l'arbre.
-    Retourne des paires de personnes avec un score de confiance.
-    """
+    """Détecte les doublons potentiels dans l'arbre actif."""
     persons_result = await db.execute(
-        select(Person).where(Person.deleted_at.is_(None))
+        select(Person).where(
+            Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id
+        )
     )
     persons = persons_result.scalars().all()
 
-    # Comparaison O(n²) pure CPU : exécutée hors event loop (thread) pour ne pas
-    # bloquer le worker unique (et donc le health check Render) sur un gros arbre.
     def _compute_pairs() -> list:
         pairs = []
         for i in range(len(persons)):
@@ -538,14 +566,14 @@ async def detect_duplicates(
 async def auto_merge_duplicates(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
 ):
-    """
-    Fusionne automatiquement toutes les paires de doublons avec un score ≥ 0.85.
-    La personne avec le moins d'informations est absorbée par l'autre.
-    Retourne un résumé des fusions effectuées.
-    """
+    """Fusionne automatiquement les doublons (score ≥ 0.85) de l'arbre actif."""
+    require_can_write(ctx)
     persons_result = await db.execute(
-        select(Person).where(Person.deleted_at.is_(None))
+        select(Person).where(
+            Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id
+        )
     )
     persons = persons_result.scalars().all()
 
@@ -561,7 +589,6 @@ async def auto_merge_duplicates(
             if score < 0.85:
                 continue
 
-            # Keep the person with more filled fields (target)
             def filled(p: Person) -> int:
                 return sum(1 for v in [p.last_name, p.birth_date, p.death_date, p.gender, p.city_of_origin] if v)
 
@@ -594,5 +621,5 @@ async def auto_merge_duplicates(
                 logger.warning(f"auto-merge failed for {source.id} → {target.id}: {exc}")
 
     if merged:
-        await invalidate_tree_cache()
+        await invalidate_tree_cache(str(ctx.tree_id))
     return {"merged": merged, "count": len(merged)}

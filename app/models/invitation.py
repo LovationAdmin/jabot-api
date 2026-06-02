@@ -25,6 +25,11 @@ class Invitation(Base):
     inviter_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
+    # Arbre auquel l'invité aura accès (en tant que visiteur). Nullable pour les
+    # invitations émises avant le multi-arbre (rétro-compat migration 008).
+    family_tree_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("family_trees.id", ondelete="CASCADE"), nullable=True
+    )
     # Statut : pending / validated / expired / revoked
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     # SMS envoyé ?

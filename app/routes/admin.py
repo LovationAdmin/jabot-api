@@ -39,6 +39,10 @@ async def reset_database(db: AsyncSession = Depends(get_db)):
     # Détacher les fiches des comptes avant suppression (FK users.person_id → persons.id)
     await db.execute(text("UPDATE users SET person_id = NULL"))
     await db.execute(text("DELETE FROM persons"))
+    # Multi-arbre : retirer les accès et les arbres (les comptes restent).
+    await db.execute(text("DELETE FROM user_tree_access"))
+    await db.execute(text("UPDATE invitations SET family_tree_id = NULL"))
+    await db.execute(text("DELETE FROM family_trees"))
     await db.commit()
     logger.warning("reset-db executed: all genealogy data deleted")
     return {"status": "ok", "message": "Données généalogiques supprimées. Comptes utilisateurs conservés."}

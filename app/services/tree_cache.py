@@ -26,9 +26,11 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_CACHE_KEY_AUTH = "jabot:tree:auth"
-_CACHE_KEY_ANON = "jabot:tree:anon"
 _TTL = 30  # secondes
+
+
+def _key(tree_id: str, authenticated: bool) -> str:
+    return f"jabot:tree:{tree_id}:{'auth' if authenticated else 'anon'}"
 
 
 def _redis() -> aioredis.Redis:
@@ -42,11 +44,10 @@ def _redis() -> aioredis.Redis:
     )
 
 
-async def get_tree_cache(authenticated: bool) -> Optional[dict]:
-    key = _CACHE_KEY_AUTH if authenticated else _CACHE_KEY_ANON
+async def get_tree_cache(tree_id: str, authenticated: bool) -> Optional[dict]:
     try:
         async with _redis() as r:
-            raw = await r.get(key)
+            raw = await r.get(_key(tree_id, authenticated))
         if raw is None:
             return None
         return json.loads(raw)
@@ -55,19 +56,28 @@ async def get_tree_cache(authenticated: bool) -> Optional[dict]:
         return None
 
 
-async def set_tree_cache(authenticated: bool, data: dict) -> None:
-    key = _CACHE_KEY_AUTH if authenticated else _CACHE_KEY_ANON
+async def set_tree_cache(tree_id: str, authenticated: bool, data: dict) -> None:
     try:
         async with _redis() as r:
-            await r.setex(key, _TTL, json.dumps(data))
+            await r.setex(_key(tree_id, authenticated), _TTL, json.dumps(data))
     except Exception as exc:
         logger.debug(f"tree_cache set failed (fail-open): {exc}")
 
 
-async def invalidate_tree_cache() -> None:
-    """Appelé après toute mutation de l'arbre (fiche ou relation)."""
+async def invalidate_tree_cache(tree_id: Optional[str] = None) -> None:
+    """Invalide le cache d'un arbre (ou de tous si tree_id est None).
+
+    Appelé après toute mutation de l'arbre (fiche ou relation). Passer le
+    tree_id concerné évite de purger les autres arbres inutilement.
+    """
     try:
         async with _redis() as r:
-            await r.delete(_CACHE_KEY_AUTH, _CACHE_KEY_ANON)
+            if tree_id is not None:
+                await r.delete(_key(tree_id, True), _key(tree_id, False))
+            else:
+                # Purge globale (fallback) : supprime toutes les clés d'arbres.
+                keys = [k async for k in r.scan_iter(match="jabot:tree:*")]
+                if keys:
+                    await r.delete(*keys)
     except Exception as exc:
         logger.debug(f"tree_cache invalidate failed (fail-open): {exc}")
