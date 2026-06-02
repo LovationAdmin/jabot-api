@@ -26,20 +26,26 @@ class Settings(BaseSettings):
     # utilisateur actif n'a jamais a refaire la validation OTP.
     ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
-    # Africa's Talking SMS (fournisseur principal - marché africain, peu cher)
+    # ── Termii SMS (primary — Africa OTP specialist, Senegal + CI, ~$0.03-0.08)
+    TERMII_API_KEY: str = ""
+    TERMII_SENDER_ID: str = "JABOT"  # max 11 chars, pre-approved by Termii
+
+    # ── Brevo (Sendinblue) SMS (secondary — cheapest for France/EU, ~€0.045)
+    BREVO_API_KEY: str = ""
+    BREVO_SENDER: str = "JABOT"  # max 11 chars alphanumeric
+
+    # ── Africa's Talking SMS (kept as tertiary fallback)
     AFRICAS_TALKING_API_KEY: str = ""
     AFRICAS_TALKING_USERNAME: str = "sandbox"
     AFRICAS_TALKING_SENDER_ID: str = "JABOT"
 
-    # Vonage SMS (fournisseur de secours - laisser vide pour désactiver)
+    # ── Vonage SMS (last-resort fallback — laisser vide pour désactiver)
     VONAGE_API_KEY: str = ""
     VONAGE_API_SECRET: str = ""
     VONAGE_BRAND_NAME: str = "JabotAI"
 
     # SMS dev mode : si True, on n'appelle PAS le fournisseur SMS reel et on
-    # expose toujours le code dans la reponse (dev_code). Permet de garder les
-    # cles Vonage configurees tout en testant sans envoyer de vrai SMS (utile
-    # tant que le compte Vonage est en trial / paiement pending).
+    # expose toujours le code dans la reponse (dev_code).
     SMS_DEV_MODE: bool = False
 
     # Chiffrement applicatif des champs sensibles (téléphone, dates, ville).
