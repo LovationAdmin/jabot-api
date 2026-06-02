@@ -32,7 +32,14 @@ _TTL = 30  # secondes
 
 
 def _redis() -> aioredis.Redis:
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Timeouts courts : le cache ne doit JAMAIS bloquer la requête. Si Redis est
+    # lent/injoignable, on échoue vite et on retombe sur le calcul direct.
+    return aioredis.from_url(
+        settings.REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
 
 
 async def get_tree_cache(authenticated: bool) -> Optional[dict]:
