@@ -21,7 +21,7 @@ def is_configured() -> bool:
     # configure : la route OTP exposera alors le dev_code.
     if settings.SMS_DEV_MODE:
         return False
-    return _vonage_configured() or _africas_talking_configured()
+    return _africas_talking_configured() or _vonage_configured()
 
 
 def _normalize_msisdn(phone: str) -> str:
@@ -91,15 +91,17 @@ async def _send_africas_talking(phone: str, message: str) -> bool:
 
 
 async def send_sms(phone: str, message: str) -> bool:
-    # Mode dev SMS : on n'appelle aucun fournisseur reel (pas de cout, pas de
-    # dependance au trial Vonage). Le code sera expose via dev_code.
+    # Mode dev SMS : on n'appelle aucun fournisseur reel (pas de cout).
+    # Le code sera expose via dev_code dans la reponse /request-otp.
     if settings.SMS_DEV_MODE:
         logger.info(f"[SMS_DEV_MODE] SMS to {phone}: {message}")
         return True
-    if _vonage_configured():
-        return await _send_vonage(phone, message)
+    # Africa's Talking en premier : fournisseur principal (marché africain, pas cher).
+    # Vonage en secours si Africa's Talking n'est pas configuré.
     if _africas_talking_configured():
         return await _send_africas_talking(phone, message)
+    if _vonage_configured():
+        return await _send_vonage(phone, message)
     # Aucun fournisseur configuré et pas en mode dev : on NE simule PAS un
     # succès (sinon la route OTP croirait le SMS envoyé sans rien envoyer).
     logger.error("Aucun fournisseur SMS configuré et SMS_DEV_MODE désactivé")

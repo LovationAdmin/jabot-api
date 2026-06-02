@@ -9,16 +9,18 @@ services:
     name: jabot-api
     env: python
     region: frankfurt
-    plan: free
-    # Le `python -c "import app.main"` est un smoke-test : si un import est cassé
-    # (module manquant, erreur de syntaxe...), le build échoue ici AVANT le déploiement,
-    # ce qui évite de mettre en prod une version qui ne démarre pas.
+    plan: starter
+    # Smoke-test : si un import est cassé, le build échoue avant le déploiement.
     buildCommand: pip install -r requirements.txt && python -c "import app.main"
-    # NB : preDeployCommand serait l'endroit idéal pour les migrations (exécuté
-    # une seule fois par déploiement, pas à chaque réveil), mais c'est une
-    # fonctionnalité PAYANTE chez Render — indisponible sur le plan Free. On
-    # garde donc les migrations dans le startCommand tant qu'on est en Free.
-    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # preDeployCommand : exécuté UNE SEULE FOIS par déploiement (pas à chaque
+    # réveil/redémarrage). Ici on y met les migrations Alembic — elles n'ont pas
+    # besoin de tourner à chaque cold start, seulement quand le code change.
+    # (Fonctionnalité disponible sur les plans payants Render.)
+    preDeployCommand: alembic upgrade head
+    # WEB_CONCURRENCY=2 : deux workers uvicorn pour traiter les requêtes en
+    # parallèle. Protège GET /tree si un worker est occupé sur un upload lourd.
+    # Les workers se synchronisent via Redis pub/sub (ws_manager).
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers $WEB_CONCURRENCY
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -38,12 +40,22 @@ services:
         value: "7"
       - key: ENVIRONMENT
         value: production
+      # 2 workers uvicorn — isolent les uploads lourds du reste du trafic.
+      - key: WEB_CONCURRENCY
+        value: "2"
+      # SMS principal : Africa's Talking (fournisseur africain, bon marché).
+      # Définir dans le dashboard Render avec les credentials production.
       - key: AFRICAS_TALKING_API_KEY
         sync: false
       - key: AFRICAS_TALKING_USERNAME
         sync: false
       - key: AFRICAS_TALKING_SENDER_ID
         value: JABOT
+      # SMS de secours : Vonage (laisser vide pour désactiver).
+      - key: VONAGE_API_KEY
+        sync: false
+      - key: VONAGE_API_SECRET
+        sync: false
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
