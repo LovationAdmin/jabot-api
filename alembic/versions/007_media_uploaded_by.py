@@ -1,7 +1,7 @@
 """add uploaded_by_user_id to media
 
 Revision ID: 007
-Revises: 006_invitations
+Revises: 006
 Create Date: 2026-06-02
 """
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = '007'
-down_revision = '006_invitations'
+down_revision = '006'
 branch_labels = None
 depends_on = None
 
