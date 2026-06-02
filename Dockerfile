@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -25,7 +25,11 @@ COPY . .
 RUN adduser --disabled-password --gecos '' appuser && chown -R appuser /app
 USER appuser
 
+# Render (et la plupart des PaaS) injectent un port dynamique via $PORT et y
+# routent TOUT le trafic externe. Le binder en dur (8000) ferait écouter l'app
+# sur le mauvais port → health check et requêtes échouent → service injoignable.
+# On honore donc $PORT, avec repli sur 8000 en local.
 EXPOSE 8000
 
 # Run Alembic migrations then start server
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

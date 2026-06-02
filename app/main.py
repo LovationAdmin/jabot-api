@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Demarrage de l'application JABOT API")
+    try:
+        from app.database import engine
+        async with engine.connect() as conn:
+            await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+        logger.info("Base de donnees accessible")
+    except Exception as exc:
+        logger.error(f"Echec de connexion a la base de donnees au demarrage: {exc}")
     await ws_manager.startup()
     yield
     await ws_manager.shutdown()
