@@ -25,8 +25,8 @@ from app.services.tree_cache import invalidate_tree_cache
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-MAX_PHOTOS_PER_PERSON = 10
-MAX_AUDIOS_PER_PERSON = 10
+MAX_PHOTOS_PER_PERSON = 5
+MAX_AUDIOS_PER_PERSON = 5
 # Un vocal peut durer jusqu'à 45 min. À ~32 kbps mono (voix) ≈ 11 Mo, mais selon
 # le codec/navigateur le débit peut être plus élevé : on garde une marge large.
 MAX_AUDIO_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
