@@ -148,6 +148,7 @@ async def update_person(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
 
     update_data = body.model_dump(exclude_unset=True)
+    changed_fields = list(update_data.keys())
     for field, value in update_data.items():
         setattr(person, field, value)
     person.updated_at = datetime.now(timezone.utc)
@@ -165,7 +166,11 @@ async def update_person(
         action="update_person",
         entity_type="person",
         entity_id=str(person_id),
-        details={"first_name": person.first_name, "last_name": person.last_name},
+        details={
+            "first_name": person.first_name,
+            "last_name": person.last_name,
+            "changed_fields": changed_fields,
+        },
     )
     await invalidate_tree_cache()
     await ws_manager.broadcast("person.updated", {"person_id": str(person_id)}, str(current_user.id))
