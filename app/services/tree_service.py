@@ -29,11 +29,11 @@ from app.models.relationship import Relationship
 
 logger = logging.getLogger(__name__)
 
-GENERATION_HEIGHT = 300   # px between generations
-NODE_WIDTH = 220           # px per node
-NODE_SPACING = 80          # horizontal gap between nodes within a family unit
-FAMILY_GAP = 130           # extra gap between distinct families on the same row
-CLUSTER_SPACING = 420      # gap between fully disconnected family trees
+GENERATION_HEIGHT = 380   # px between generations
+NODE_WIDTH = 240           # px per node (layout unit, card is 208 px wide → 32 px margin)
+NODE_SPACING = 110         # horizontal gap between nodes within a family unit
+FAMILY_GAP = 200           # extra gap between distinct families on the same row
+CLUSTER_SPACING = 650      # gap between fully disconnected family trees
 
 
 def compute_tree_layout(
