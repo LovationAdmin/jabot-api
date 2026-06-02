@@ -69,6 +69,7 @@ class PersonUpdate(BaseModel):
 
 class PersonResponse(BaseModel):
     id: uuid.UUID
+    family_tree_id: Optional[uuid.UUID] = None
     first_name: str
     last_name: Optional[str] = None
     nicknames: Optional[List[str]] = None
