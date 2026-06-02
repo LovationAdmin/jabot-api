@@ -82,7 +82,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _client(self) -> aioredis.Redis:
         if self._redis is None:
-            self._redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            # Timeouts courts : le rate-limit ne doit jamais ajouter de latence
+            # perceptible. Si Redis est lent ou injoignable on fail-open (<1 s).
+            self._redis = aioredis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
         return self._redis
 
     async def _check(self, ip: str, rule: Rule) -> Tuple[bool, int]:

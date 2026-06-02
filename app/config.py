@@ -26,15 +26,15 @@ class Settings(BaseSettings):
     # utilisateur actif n'a jamais a refaire la validation OTP.
     ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
-    # Vonage SMS (fournisseur principal - couverture mondiale)
-    VONAGE_API_KEY: str = ""
-    VONAGE_API_SECRET: str = ""
-    VONAGE_BRAND_NAME: str = "JabotAI"
-
-    # Africa's Talking SMS (fournisseur de secours)
+    # Africa's Talking SMS (fournisseur principal - marché africain, peu cher)
     AFRICAS_TALKING_API_KEY: str = ""
     AFRICAS_TALKING_USERNAME: str = "sandbox"
     AFRICAS_TALKING_SENDER_ID: str = "JABOT"
+
+    # Vonage SMS (fournisseur de secours - laisser vide pour désactiver)
+    VONAGE_API_KEY: str = ""
+    VONAGE_API_SECRET: str = ""
+    VONAGE_BRAND_NAME: str = "JabotAI"
 
     # SMS dev mode : si True, on n'appelle PAS le fournisseur SMS reel et on
     # expose toujours le code dans la reponse (dev_code). Permet de garder les
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
 
     # Invitations
-    # Mettre à True uniquement quand Vonage OTP est opérationnel.
+    # Mettre à True quand le fournisseur SMS production est opérationnel.
     INVITATION_ENABLED: bool = False
 
     # App
