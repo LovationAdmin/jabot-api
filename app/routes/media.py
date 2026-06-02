@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.media import Media
@@ -141,11 +142,14 @@ async def upload_media(
     )
     db.add(media_record)
     await db.commit()
-    await db.refresh(media_record)
     await invalidate_tree_cache()
     await ws_manager.broadcast("media.changed", {"person_id": str(person_id)}, str(current_user.id))
-    from app.schemas.media import MediaResponse
-    return MediaResponse.from_orm_with_uploader(media_record)
+    result = await db.execute(
+        select(Media)
+        .options(selectinload(Media.uploaded_by).selectinload(User.person))
+        .where(Media.id == media_record.id)
+    )
+    return MediaResponse.from_orm_with_uploader(result.scalar_one())
 
 
 async def _check_count_limit(db: AsyncSession, person_id: uuid.UUID, media_type: str) -> None:
@@ -257,11 +261,14 @@ async def confirm_media_upload(
     )
     db.add(media_record)
     await db.commit()
-    await db.refresh(media_record)
     await invalidate_tree_cache()
     await ws_manager.broadcast("media.changed", {"person_id": str(body.person_id)}, str(current_user.id))
-    from app.schemas.media import MediaResponse
-    return MediaResponse.from_orm_with_uploader(media_record)
+    result = await db.execute(
+        select(Media)
+        .options(selectinload(Media.uploaded_by).selectinload(User.person))
+        .where(Media.id == media_record.id)
+    )
+    return MediaResponse.from_orm_with_uploader(result.scalar_one())
 
 
 @router.delete("/{media_id}", status_code=status.HTTP_204_NO_CONTENT)
