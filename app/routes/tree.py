@@ -20,6 +20,7 @@ from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
 from app.services.tree_service import compute_tree_layout, merge_persons
 from app.services.audit_service import write_audit
+from app.services.tree_cache import get_tree_cache, set_tree_cache, invalidate_tree_cache
 
 
 async def _person_name(db: AsyncSession, person_id) -> str:
@@ -43,6 +44,13 @@ async def get_full_tree(
     Accessible sans authentification (visiteur anonyme). Si un token valide est fourni,
     l'utilisateur est identifié (current_user non None).
     """
+    is_auth = current_user is not None
+
+    # Retour du cache Redis (évite N déchiffrements Fernet + layout CPU).
+    cached = await get_tree_cache(is_auth)
+    if cached is not None:
+        return cached
+
     persons_result = await db.execute(
         select(Person)
         .options(selectinload(Person.media))
@@ -53,7 +61,6 @@ async def get_full_tree(
     rels_result = await db.execute(select(Relationship))
     relationships = rels_result.scalars().all()
 
-    # Compute layout
     # Calcul de layout = pur CPU lourd : on l'exécute dans un thread pour ne pas
     # bloquer l'event loop (sinon le health check Render expire → redémarrage).
     layout = await asyncio.to_thread(compute_tree_layout, persons, relationships)
@@ -64,8 +71,6 @@ async def get_full_tree(
     # sont réservées aux utilisateurs authentifiés. Ce masquage est fait CÔTÉ
     # SERVEUR — le payload anonyme ne contient tout simplement pas ces champs,
     # contrairement à un masquage purement visuel qui resterait scrapable.
-    is_auth = current_user is not None
-
     nodes = []
     for p in persons:
         pos = layout_map.get(str(p.id), {"x": 0, "y": 0, "generation": 0})
@@ -104,7 +109,9 @@ async def get_full_tree(
             "label": r.type,
         })
 
-    return {"nodes": nodes, "edges": edges}
+    response = {"nodes": nodes, "edges": edges}
+    await set_tree_cache(is_auth, response)
+    return response
 
 
 @router.get("/person/{person_id}")
@@ -339,6 +346,7 @@ async def add_relationship(
             "type": rel.type,
         },
     )
+    await invalidate_tree_cache()
     await ws_manager.broadcast("relationship.created", {"relationship_id": str(rel.id)}, str(current_user.id))
     return rel
 
@@ -371,6 +379,7 @@ async def delete_relationship(
         entity_id=str(relationship_id),
         details=details,
     )
+    await invalidate_tree_cache()
     await ws_manager.broadcast("relationship.deleted", {"relationship_id": str(relationship_id)}, str(current_user.id))
 
 
@@ -402,6 +411,7 @@ async def merge_family_branches(
     source_name = await _person_name(db, source_id)
     target_name = await _person_name(db, target_id)
     result = await merge_persons(db, source_id, target_id)
+    await invalidate_tree_cache()
     await write_audit(
         db,
         actor_user_id=current_user.id,
@@ -583,4 +593,6 @@ async def auto_merge_duplicates(
             except Exception as exc:
                 logger.warning(f"auto-merge failed for {source.id} → {target.id}: {exc}")
 
+    if merged:
+        await invalidate_tree_cache()
     return {"merged": merged, "count": len(merged)}
