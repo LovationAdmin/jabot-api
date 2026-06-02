@@ -42,3 +42,24 @@ async def reset_database(db: AsyncSession = Depends(get_db)):
     await db.commit()
     logger.warning("reset-db executed: all genealogy data deleted")
     return {"status": "ok", "message": "Données généalogiques supprimées. Comptes utilisateurs conservés."}
+
+
+@router.post("/wipe-db", dependencies=[Depends(_check_secret)])
+async def wipe_database(db: AsyncSession = Depends(get_db)):
+    """
+    Supprime TOUTES les données : généalogiques ET comptes utilisateurs.
+    Remet la base dans l'état d'une installation fraîche (tables vides).
+
+    Requiert le header X-Reset-Secret = RESET_SECRET (variable d'env).
+    """
+    await db.execute(text("DELETE FROM audit_logs"))
+    await db.execute(text("DELETE FROM relationships"))
+    await db.execute(text("DELETE FROM media"))
+    await db.execute(text("DELETE FROM canvas_positions"))
+    await db.execute(text("UPDATE users SET person_id = NULL"))
+    await db.execute(text("DELETE FROM persons"))
+    await db.execute(text("DELETE FROM users"))
+    await db.execute(text("DELETE FROM invitations"))
+    await db.commit()
+    logger.warning("wipe-db executed: ALL data deleted including user accounts")
+    return {"status": "ok", "message": "Base complètement vidée. Tous les comptes et données généalogiques supprimés."}
