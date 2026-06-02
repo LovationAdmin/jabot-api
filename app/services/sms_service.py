@@ -97,9 +97,11 @@ async def send_sms(phone: str, message: str) -> bool:
         logger.info(f"[SMS_DEV_MODE] SMS to {phone}: {message}")
         return True
     # Africa's Talking en premier : fournisseur principal (marché africain, pas cher).
-    # Vonage en secours si Africa's Talking n'est pas configuré.
+    # Si l'envoi échoue (401, timeout, erreur réseau), on tente Vonage en cascade.
     if _africas_talking_configured():
-        return await _send_africas_talking(phone, message)
+        if await _send_africas_talking(phone, message):
+            return True
+        logger.warning("Africa's Talking a échoué, tentative avec Vonage en secours")
     if _vonage_configured():
         return await _send_vonage(phone, message)
     # Aucun fournisseur configuré et pas en mode dev : on NE simule PAS un
