@@ -4,11 +4,14 @@ Cloudinary storage service for photos and audio clips.
 
 import logging
 import io
+import time
 import asyncio
 from typing import Optional, Dict, Any
 
 import cloudinary
 import cloudinary.uploader
+import cloudinary.utils
+import cloudinary.api
 
 from app.config import settings
 
@@ -21,6 +24,52 @@ cloudinary.config(
     api_secret=settings.CLOUDINARY_API_SECRET,
     secure=True,
 )
+
+def is_configured() -> bool:
+    return bool(settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY
+                and settings.CLOUDINARY_API_SECRET)
+
+
+def sign_direct_upload(folder: str) -> Dict[str, Any]:
+    """
+    Produit les paramètres signés pour un upload DIRECT navigateur → Cloudinary.
+
+    Le navigateur enverra le fichier (potentiellement très volumineux : un vocal
+    de 45 min) directement à Cloudinary, sans transiter par le backend. On signe
+    uniquement `folder` + `timestamp` ; le client doit envoyer EXACTEMENT ces
+    paramètres, plus api_key. La signature expire (Cloudinary rejette un
+    timestamp trop ancien), ce qui limite la fenêtre d'abus.
+    """
+    timestamp = int(time.time())
+    params_to_sign = {"folder": folder, "timestamp": timestamp}
+    signature = cloudinary.utils.api_sign_request(
+        params_to_sign, settings.CLOUDINARY_API_SECRET
+    )
+    return {
+        "cloud_name": settings.CLOUDINARY_CLOUD_NAME,
+        "api_key": settings.CLOUDINARY_API_KEY,
+        "timestamp": timestamp,
+        "signature": signature,
+        "folder": folder,
+    }
+
+
+async def get_resource(public_id: str, media_type: str) -> Optional[Dict[str, Any]]:
+    """
+    Vérifie qu'un asset existe réellement sur Cloudinary et retourne ses
+    métadonnées autoritatives (url, bytes, duration). Empêche un client de créer
+    une ligne Media pointant vers une URL arbitraire. Appel réseau bloquant →
+    exécuté hors event loop.
+    """
+    resource_type = "image" if media_type == "photo" else "video"
+    try:
+        return await asyncio.to_thread(
+            cloudinary.api.resource, public_id, resource_type=resource_type
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Asset Cloudinary introuvable ({public_id}): {exc}")
+        return None
+
 
 PHOTO_FOLDER = "jabot/photos"
 AUDIO_FOLDER = "jabot/audio"

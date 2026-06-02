@@ -9,10 +9,15 @@ from sqlalchemy import select, func
 from app.database import get_db
 from app.models.media import Media
 from app.models.person import Person
-from app.schemas.media import MediaResponse
+from app.schemas.media import (
+    MediaResponse, MediaSignRequest, MediaSignResponse, MediaConfirmRequest,
+)
 from app.middleware.auth import get_current_user
 from app.models.user import User
-from app.services.storage_service import upload_to_cloudinary, delete_from_cloudinary
+from app.services.storage_service import (
+    upload_to_cloudinary, delete_from_cloudinary,
+    is_configured, sign_direct_upload, get_resource, PHOTO_FOLDER, AUDIO_FOLDER,
+)
 from app.services.ws_manager import manager as ws_manager
 from app.services.tree_cache import invalidate_tree_cache
 
@@ -21,7 +26,10 @@ router = APIRouter()
 
 MAX_PHOTOS_PER_PERSON = 3
 MAX_AUDIOS_PER_PERSON = 3
-MAX_AUDIO_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+# Un vocal peut durer jusqu'à 45 min. À ~32 kbps mono (voix) ≈ 11 Mo, mais selon
+# le codec/navigateur le débit peut être plus élevé : on garde une marge large.
+MAX_AUDIO_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
+MAX_PHOTO_SIZE_BYTES = 25 * 1024 * 1024   # 25 MB
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"
@@ -135,6 +143,120 @@ async def upload_media(
     await db.refresh(media_record)
     await invalidate_tree_cache()
     await ws_manager.broadcast("media.changed", {"person_id": str(person_id)}, str(current_user.id))
+    return media_record
+
+
+async def _check_count_limit(db: AsyncSession, person_id: uuid.UUID, media_type: str) -> None:
+    """Vérifie que la personne n'a pas atteint le quota de médias de ce type."""
+    count_result = await db.execute(
+        select(func.count(Media.id)).where(
+            Media.person_id == person_id, Media.type == media_type
+        )
+    )
+    current_count = count_result.scalar_one()
+    max_count = MAX_PHOTOS_PER_PERSON if media_type == "photo" else MAX_AUDIOS_PER_PERSON
+    if current_count >= max_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Maximum {max_count} {media_type}(s) autorisé(s) par personne",
+        )
+
+
+@router.post("/sign", response_model=MediaSignResponse)
+async def sign_media_upload(
+    body: MediaSignRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Autorise un upload DIRECT navigateur → Cloudinary et renvoie une signature.
+
+    Le fichier (photo ou vocal jusqu'à 45 min) ne transite JAMAIS par le backend :
+    le navigateur l'envoie directement à Cloudinary, ce qui évite les limites de
+    taille/timeout de requête, ne bloque pas le worker unique et divise la bande
+    passante par deux. Le backend se contente d'autoriser (auth + quota) puis de
+    signer, et enregistrera les métadonnées via POST /media une fois l'upload fini.
+    """
+    if body.media_type not in ("photo", "audio"):
+        raise HTTPException(status_code=400, detail="media_type doit être 'photo' ou 'audio'")
+    if not is_configured():
+        raise HTTPException(status_code=503, detail="Stockage média non configuré")
+
+    person_result = await db.execute(
+        select(Person).where(Person.id == body.person_id, Person.deleted_at.is_(None))
+    )
+    if person_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Personne introuvable")
+
+    await _check_count_limit(db, body.person_id, body.media_type)
+
+    base = PHOTO_FOLDER if body.media_type == "photo" else AUDIO_FOLDER
+    folder = f"{base}/{body.person_id}"
+    signed = sign_direct_upload(folder)
+    resource_type = "image" if body.media_type == "photo" else "video"
+    return MediaSignResponse(resource_type=resource_type, **signed)
+
+
+@router.post("", response_model=MediaResponse, status_code=status.HTTP_201_CREATED)
+async def confirm_media_upload(
+    body: MediaConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Enregistre les métadonnées d'un média après un upload direct réussi.
+
+    Le serveur INTERROGE Cloudinary pour récupérer l'URL/poids/durée autoritatifs
+    (le client ne peut donc pas injecter une URL arbitraire) et applique les
+    limites de taille avant de persister.
+    """
+    if body.media_type not in ("photo", "audio"):
+        raise HTTPException(status_code=400, detail="media_type doit être 'photo' ou 'audio'")
+
+    person_result = await db.execute(
+        select(Person).where(Person.id == body.person_id, Person.deleted_at.is_(None))
+    )
+    if person_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Personne introuvable")
+
+    await _check_count_limit(db, body.person_id, body.media_type)
+
+    info = await get_resource(body.public_id, body.media_type)
+    if info is None:
+        raise HTTPException(status_code=400, detail="Asset introuvable sur le stockage")
+
+    file_size = info.get("bytes")
+    max_size = MAX_PHOTO_SIZE_BYTES if body.media_type == "photo" else MAX_AUDIO_SIZE_BYTES
+    if file_size and file_size > max_size:
+        # Trop volumineux : on supprime l'asset et on refuse.
+        await delete_from_cloudinary(body.public_id, body.media_type)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Fichier trop volumineux (max {max_size // (1024*1024)} Mo)",
+        )
+
+    order_result = await db.execute(
+        select(func.coalesce(func.max(Media.order_index), -1)).where(
+            Media.person_id == body.person_id, Media.type == body.media_type
+        )
+    )
+    next_order = order_result.scalar_one() + 1
+
+    media_record = Media(
+        id=uuid.uuid4(),
+        person_id=body.person_id,
+        type=body.media_type,
+        cloudinary_id=body.public_id,
+        url=info["secure_url"],
+        duration_seconds=int(info.get("duration", 0)) or None,
+        file_size_bytes=file_size,
+        order_index=next_order,
+    )
+    db.add(media_record)
+    await db.commit()
+    await db.refresh(media_record)
+    await invalidate_tree_cache()
+    await ws_manager.broadcast("media.changed", {"person_id": str(body.person_id)}, str(current_user.id))
     return media_record
 
 
