@@ -8,12 +8,18 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
-from app.schemas.auth import OTPRequest, OTPVerify, Token, MeResponse, LinkPersonRequest, TreeAccessItem
-from app.schemas.person import PersonCreate, PersonResponse
+from app.schemas.auth import (
+    OTPRequest, OTPVerify, Token, MeResponse, LinkPersonRequest, TreeAccessItem,
+    OnboardSearchRequest, OnboardSearchResponse, OnboardMatch, MatchRelative,
+)
+from app.schemas.person import PersonCreate, PersonResponse, SearchRequest
 from app.services import auth_service, sms_service, tree_access_service
+from app.services.search_service import search_persons
 from app.middleware.auth import get_current_user
 from app.models.user import User
 from app.models.person import Person, CanvasPosition
+from app.models.relationship import Relationship
+from app.models.family_tree import FamilyTree
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -137,6 +143,102 @@ async def link_person(
         tree_accesses=tree_accesses,
         active_tree_id=str(person.family_tree_id),
     )
+
+
+async def _immediate_family(db: AsyncSession, person_id: uuid.UUID, tree_id: uuid.UUID) -> tuple[list[MatchRelative], list[MatchRelative]]:
+    """Parents + fratrie directe d'une personne, dans son arbre."""
+    rels = (await db.execute(
+        select(Relationship).where(
+            Relationship.family_tree_id == tree_id,
+            (Relationship.person_a_id == person_id) | (Relationship.person_b_id == person_id),
+        )
+    )).scalars().all()
+
+    parent_ids: list[uuid.UUID] = []
+    sibling_ids: list[uuid.UUID] = []
+    for r in rels:
+        if r.type == "parent" and r.person_b_id == person_id:
+            parent_ids.append(r.person_a_id)          # A est parent de la personne
+        elif r.type in ("sibling", "half_sibling", "step_sibling"):
+            other = r.person_a_id if r.person_b_id == person_id else r.person_b_id
+            sibling_ids.append(other)
+
+    out_parents, out_siblings = [], []
+    all_ids = list({*parent_ids, *sibling_ids})
+    if all_ids:
+        persons = (await db.execute(
+            select(Person).where(Person.id.in_(all_ids), Person.deleted_at.is_(None))
+        )).scalars().all()
+        by_id = {p.id: p for p in persons}
+        for pid in parent_ids:
+            p = by_id.get(pid)
+            if p:
+                out_parents.append(MatchRelative(first_name=p.first_name, last_name=p.last_name))
+        for sid in sibling_ids:
+            p = by_id.get(sid)
+            if p:
+                out_siblings.append(MatchRelative(first_name=p.first_name, last_name=p.last_name))
+    return out_parents, out_siblings
+
+
+@router.post("/onboard-search", response_model=OnboardSearchResponse)
+async def onboard_search(
+    body: OnboardSearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cherche, à travers TOUS les arbres, des fiches correspondant à l'identité
+    saisie pendant l'onboarding. Regroupe par arbre et joint le contexte familial
+    immédiat (parents + fratrie) pour que l'utilisateur reconnaisse sa famille.
+
+    Retourne au plus une correspondance (la meilleure) par arbre.
+    """
+    if not body.name and not body.nickname and not body.parent_names and not body.sibling_names:
+        return OnboardSearchResponse(matches=[])
+
+    matches = await search_persons(db, SearchRequest(
+        name=body.name, nickname=body.nickname,
+        parent_names=body.parent_names, sibling_names=body.sibling_names,
+        city_of_origin=body.city_of_origin,
+    ))
+
+    # Garder la meilleure correspondance par arbre.
+    best_per_tree: dict[str, OnboardMatch] = {}
+    # Charger les arbres des personnes correspondantes en une fois.
+    pid_list = [uuid.UUID(m.person.id) if isinstance(m.person.id, str) else m.person.id for m in matches]
+    tree_of: dict[str, uuid.UUID] = {}
+    if pid_list:
+        rows = (await db.execute(
+            select(Person.id, Person.family_tree_id).where(Person.id.in_(pid_list))
+        )).all()
+        tree_of = {str(pid): tid for pid, tid in rows}
+
+    tree_names: dict[uuid.UUID, str] = {}
+    for m in matches:
+        pid = str(m.person.id)
+        tid = tree_of.get(pid)
+        if tid is None:
+            continue
+        if str(tid) in best_per_tree and best_per_tree[str(tid)].confidence >= m.confidence:
+            continue
+        if tid not in tree_names:
+            tn = (await db.execute(select(FamilyTree.name).where(FamilyTree.id == tid))).scalar_one_or_none()
+            tree_names[tid] = tn or "Arbre"
+        parents, siblings = await _immediate_family(db, uuid.UUID(pid), tid)
+        best_per_tree[str(tid)] = OnboardMatch(
+            tree_id=str(tid),
+            tree_name=tree_names[tid],
+            person_id=pid,
+            first_name=m.person.first_name,
+            last_name=m.person.last_name,
+            birth_date=m.person.birth_date.isoformat() if getattr(m.person, "birth_date", None) else None,
+            confidence=round(m.confidence, 2),
+            parents=parents,
+            siblings=siblings,
+        )
+
+    ordered = sorted(best_per_tree.values(), key=lambda x: x.confidence, reverse=True)
+    return OnboardSearchResponse(matches=ordered)
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)

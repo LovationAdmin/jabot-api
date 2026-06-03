@@ -76,3 +76,37 @@ class LinkPersonRequest(BaseModel):
     person_id: uuid.UUID
     # Arbre où se trouve la fiche (multi-arbre). Optionnel : déduit de la fiche.
     tree_id: Optional[uuid.UUID] = None
+
+
+# ─── Recherche d'onboarding multi-arbres ────────────────────────────
+
+class OnboardSearchRequest(BaseModel):
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    birth_date: Optional[str] = None
+    parent_names: Optional[list[str]] = None
+    sibling_names: Optional[list[str]] = None
+    city_of_origin: Optional[str] = None
+
+
+class MatchRelative(BaseModel):
+    first_name: str
+    last_name: Optional[str] = None
+
+
+class OnboardMatch(BaseModel):
+    """Une correspondance trouvée dans un arbre, avec le contexte familial
+    immédiat (parents + fratrie) pour que l'utilisateur reconnaisse sa famille."""
+    tree_id: str
+    tree_name: str
+    person_id: str
+    first_name: str
+    last_name: Optional[str] = None
+    birth_date: Optional[str] = None
+    confidence: float
+    parents: list[MatchRelative] = []
+    siblings: list[MatchRelative] = []
+
+
+class OnboardSearchResponse(BaseModel):
+    matches: list[OnboardMatch] = []

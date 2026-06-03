@@ -19,9 +19,10 @@ from sqlalchemy import select
 from app.database import get_db
 from app.models.invitation import Invitation
 from app.models.user import User
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, get_current_user_optional
 from app.middleware.tree_context import get_active_tree, TreeContext, require_can_write
 from app.security.crypto import phone_hash
+from app.services import tree_access_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,14 @@ async def validate_invitation(
     body: ValidateInvitationRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """L'invité valide son token + code → reçoit un cookie de session visiteur."""
+    """L'invité valide son token + code.
+
+    - Si l'utilisateur est authentifié (Bearer token) → octroie rôle visiteur
+      sur l'arbre associé à l'invitation + pose le cookie de session.
+    - Sinon → cookie visiteur seul (accès anonyme limité).
+    """
     _check_enabled()
 
     result = await db.execute(
@@ -208,6 +215,11 @@ async def validate_invitation(
 
     inv.status = "validated"
     inv.validated_at = datetime.now(timezone.utc)
+
+    # Grant authenticated user visitor access to the invitation's tree.
+    if current_user is not None and inv.family_tree_id is not None:
+        await tree_access_service.grant_access(db, current_user.id, inv.family_tree_id, "visitor")
+
     await db.commit()
 
     _issue_visitor_cookie(response, body.token)
