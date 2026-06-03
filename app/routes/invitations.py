@@ -63,6 +63,7 @@ class ValidateInvitationRequest(BaseModel):
 class ValidateInvitationResponse(BaseModel):
     success: bool
     message: str
+    tree_id: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -227,6 +228,7 @@ async def validate_invitation(
     return ValidateInvitationResponse(
         success=True,
         message="Invitation validée. Bienvenue sur Jabot !",
+        tree_id=str(inv.family_tree_id) if inv.family_tree_id else None,
     )
 
 
@@ -235,11 +237,7 @@ async def check_visitor_session(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Vérifie si le visiteur a une session valide (cookie)."""
-    if not settings.INVITATION_ENABLED:
-        # Feature off → tout le monde est considéré visiteur autorisé
-        return {"valid": True, "reason": "open_access"}
-
+    """Vérifie si le visiteur a une session valide (cookie) et retourne l'arbre associé."""
     token = request.cookies.get(VISITOR_COOKIE_NAME)
     if not token:
         return {"valid": False, "reason": "no_cookie"}
@@ -251,7 +249,11 @@ async def check_visitor_session(
     if inv is None:
         return {"valid": False, "reason": "invalid_token"}
 
-    return {"valid": True, "reason": "validated_invitation"}
+    return {
+        "valid": True,
+        "reason": "validated_invitation",
+        "tree_id": str(inv.family_tree_id) if inv.family_tree_id else None,
+    }
 
 
 @router.get("/list")

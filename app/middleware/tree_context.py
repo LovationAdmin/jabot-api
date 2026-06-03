@@ -5,21 +5,24 @@ Chaque endpoint scopé lit l'arbre cible depuis le header `X-Tree-ID` (ou le
 query param `?tree_id=`), vérifie que l'utilisateur y a accès, et expose le
 rôle (`owner` / `member` / `visitor`).
 
-Repli non-bloquant (Phase 1) : si aucun arbre n'est précisé, on retombe sur
-le premier arbre de l'utilisateur, sinon sur l'arbre par défaut le plus ancien
-(préserve le comportement « arbre global » d'avant le multi-arbre).
+Accès public contrôlé : un visiteur anonyme ne peut voir qu'un arbre s'il
+possède un cookie d'invitation validé (`jabot_visitor`). Sans cookie et sans
+token JWT, l'arbre n'est pas exposé.
 """
 import uuid
 from typing import NamedTuple, Optional
 
-from fastapi import Depends, Header, Query, HTTPException, status
+from fastapi import Depends, Header, Query, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.family_tree import FamilyTree, UserTreeAccess
+from app.models.invitation import Invitation
 from app.models.user import User
 from app.middleware.auth import get_current_user, get_current_user_optional
+
+VISITOR_COOKIE_NAME = "jabot_visitor"
 
 
 class TreeContext(NamedTuple):
@@ -59,11 +62,21 @@ async def _first_tree_for_user(db: AsyncSession, user_id: uuid.UUID) -> Optional
     return TreeContext(row[0], row[1]) if row else None
 
 
-async def _default_tree_id(db: AsyncSession) -> Optional[uuid.UUID]:
+async def _tree_from_visitor_cookie(db: AsyncSession, request: Request) -> Optional[TreeContext]:
+    """Retourne le TreeContext associé au cookie visiteur, si valide."""
+    token = request.cookies.get(VISITOR_COOKIE_NAME)
+    if not token:
+        return None
     res = await db.execute(
-        select(FamilyTree.id).order_by(FamilyTree.created_at.asc()).limit(1)
+        select(Invitation.family_tree_id).where(
+            Invitation.token == token,
+            Invitation.status == "validated",
+        )
     )
-    return res.scalar_one_or_none()
+    tree_id = res.scalar_one_or_none()
+    if tree_id is None:
+        return None
+    return TreeContext(tree_id, "visitor")
 
 
 async def get_active_tree(
@@ -91,12 +104,19 @@ async def get_active_tree(
 
 
 async def get_active_tree_optional(
+    request: Request,
     x_tree_id: Optional[str] = Header(None, alias="X-Tree-ID"),
     tree_id_param: Optional[uuid.UUID] = Query(None, alias="tree_id"),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[TreeContext]:
-    """Arbre actif pour un endpoint public (visiteur anonyme toléré)."""
+    """Arbre actif pour un endpoint public.
+
+    Accès autorisé si :
+    - utilisateur authentifié avec accès à l'arbre demandé/par défaut, OU
+    - visiteur anonyme porteur d'un cookie d'invitation validé.
+    Tout autre cas → None (le routeur redirige vers la landing page).
+    """
     tid = _parse_tid(x_tree_id, tree_id_param)
 
     if current_user is not None:
@@ -109,13 +129,14 @@ async def get_active_tree_optional(
             if ctx is not None:
                 return ctx
 
-    # Anonyme, ou pas d'accès : on retombe sur l'arbre demandé ou le défaut,
-    # en lecture seule (visitor).
-    if tid is not None:
-        return TreeContext(tid, "visitor")
-    default = await _default_tree_id(db)
-    if default is not None:
-        return TreeContext(default, "visitor")
+    # Anonyme (ou authentifié sans accès à cet arbre) : seul le cookie
+    # d'invitation validé donne accès, et uniquement à l'arbre de l'invitation.
+    visitor_ctx = await _tree_from_visitor_cookie(db, request)
+    if visitor_ctx is not None:
+        # Si un arbre spécifique est demandé, il doit correspondre à l'invitation.
+        if tid is None or visitor_ctx.tree_id == tid:
+            return visitor_ctx
+
     return None
 
 
