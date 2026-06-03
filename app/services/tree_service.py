@@ -157,7 +157,8 @@ def _layout_component(
         elif r.type == "spouse":
             spouses_of[a].add(b)
             spouses_of[b].add(a)
-        elif r.type == "sibling":
+        elif r.type in ("sibling", "half_sibling", "step_sibling"):
+            # Tous les types de fratrie partagent la même génération.
             siblings_of[a].add(b)
             siblings_of[b].add(a)
 
@@ -189,50 +190,22 @@ def _layout_component(
                 generations[child_id] = gen + 1
                 queue.append(child_id)
 
-    # Pass 2: spouses share the same generation
-    changed = True
-    while changed:
-        changed = False
-        for pid in list(pid_set):
-            partner_gens = [
-                generations[sp]
-                for sp in spouses_of[pid]
-                if sp in generations and sp in (children_of.keys() | set(true_roots))
-            ]
-            if not partner_gens:
-                partner_gens = [generations[sp] for sp in spouses_of[pid] if sp in generations]
-            if partner_gens:
-                best_gen = max(partner_gens)
-                if generations.get(pid, -1) != best_gen:
-                    generations[pid] = best_gen
-                    changed = True
-
-    # Pass 2b: siblings share the same generation
-    changed = True
-    while changed:
-        changed = False
-        for pid in list(pid_set):
-            if pid not in generations:
-                continue
-            for sib in siblings_of[pid]:
-                if sib in pid_set and generations.get(sib) != generations[pid]:
-                    generations[sib] = generations[pid]
-                    changed = True
-
-    # Pass 3: enforce parent strictly above child after passes 2/2b may have
-    # shifted generations. Propagate downward so the whole subtree stays consistent.
+    # Pass 2: inférence pour les nœuds non encore placés — un conjoint ou un
+    # frère/sœur d'un nœud déjà placé hérite de SA génération. Indispensable pour
+    # les conjoints « mariés dans la famille » (sans parents propres) : sans ça
+    # ils tombaient dans le fallback (max+1) et se retrouvaient une ligne plus
+    # bas que leur partenaire. On ne fait que REMPLIR les générations manquantes.
     changed = True
     while changed:
         changed = False
         for pid in pid_set:
-            p_gen = generations.get(pid)
-            if p_gen is None:
+            if pid in generations:
                 continue
-            for child_id in children_of[pid]:
-                c_gen = generations.get(child_id)
-                if c_gen is not None and c_gen <= p_gen:
-                    generations[child_id] = p_gen + 1
+            for nb in (spouses_of[pid] | siblings_of[pid]):
+                if nb in generations:
+                    generations[pid] = generations[nb]
                     changed = True
+                    break
 
     # Pass 4: generation inference from extended relationship types.
     # Extended types (grandparent, uncle_aunt, etc.) are stored in the DB but
@@ -270,6 +243,42 @@ def _layout_component(
     for p in persons:
         if p.id not in generations:
             generations[p.id] = max_gen + 1
+
+    # Pass 5 : contraintes générationnelles appliquées SIMULTANÉMENT jusqu'à
+    # point fixe, sur des générations désormais toutes définies. Les traiter
+    # séparément laissait la règle « parent au-dessus de l'enfant » redécaler UN
+    # SEUL des deux conjoints après leur égalisation, sans les réaligner → couples
+    # à des hauteurs différentes. Chaque opération ne fait qu'AUGMENTER une
+    # génération (monotone) → convergence garantie.
+    #   a) conjoints à la même génération (alignés sur le plus bas = max)
+    #   b) fratrie (y c. demi / par alliance) à la même génération
+    #   c) parent strictement au-dessus de l'enfant
+    for _ in range(len(pid_set) + 10):
+        changed = False
+
+        for pid in pid_set:                       # (c) parent au-dessus de l'enfant
+            p_gen = generations[pid]
+            for child_id in children_of[pid]:
+                if generations[child_id] <= p_gen:
+                    generations[child_id] = p_gen + 1
+                    changed = True
+
+        for pid in pid_set:                       # (a) conjoints au même niveau
+            for sp in spouses_of[pid]:
+                if generations[sp] != generations[pid]:
+                    m = max(generations[pid], generations[sp])
+                    generations[pid] = generations[sp] = m
+                    changed = True
+
+        for pid in pid_set:                       # (b) fratrie au même niveau
+            for sib in siblings_of[pid]:
+                if generations[sib] != generations[pid]:
+                    m = max(generations[pid], generations[sib])
+                    generations[pid] = generations[sib] = m
+                    changed = True
+
+        if not changed:
+            break
 
     # Group by generation
     gen_groups: Dict[int, List[uuid.UUID]] = defaultdict(list)
