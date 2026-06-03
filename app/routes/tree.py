@@ -488,6 +488,55 @@ def _pair_key(a_id, b_id) -> tuple:
     return (s[0], s[1])
 
 
+_PARENT_TYPES = {"parent", "step_parent"}
+_SIBLING_TYPES = {"sibling", "half_sibling", "step_sibling"}
+
+
+def _build_relative_name_sets(persons, relationships) -> dict:
+    """
+    Pour chaque personne, construit les ensembles de NOMS normalises de ses
+    parents, enfants et freres/soeurs. On compare par nom (et non par id) afin
+    de ne pas ecarter de vrais doublons dont un meme proche aurait ete saisi
+    deux fois.
+    """
+    name_of = {p.id: _normalize(p.first_name or "") for p in persons}
+    sets = {p.id: {"parents": set(), "children": set(), "siblings": set()} for p in persons}
+
+    for r in relationships:
+        a, b = r.person_a_id, r.person_b_id
+        if a not in sets or b not in sets:
+            continue
+        if r.type in _PARENT_TYPES:
+            # person_a est le parent de person_b.
+            sets[b]["parents"].add(name_of[a])
+            sets[a]["children"].add(name_of[b])
+        elif r.type == "child":
+            sets[a]["parents"].add(name_of[b])
+            sets[b]["children"].add(name_of[a])
+        elif r.type in _SIBLING_TYPES:
+            sets[a]["siblings"].add(name_of[b])
+            sets[b]["siblings"].add(name_of[a])
+
+    return sets
+
+
+def _relatives_contradict(rel_sets: dict, a_id, b_id) -> bool:
+    """
+    True si A et B ne peuvent PAS etre la meme personne : pour au moins une
+    categorie (parents, enfants, fratrie), les deux ont des proches renseignes
+    mais AUCUN nom en commun.
+    """
+    sa, sb = rel_sets.get(a_id), rel_sets.get(b_id)
+    if not sa or not sb:
+        return False
+    for cat in ("parents", "children", "siblings"):
+        na = {n for n in sa[cat] if n}
+        nb = {n for n in sb[cat] if n}
+        if na and nb and na.isdisjoint(nb):
+            return True
+    return False
+
+
 def _duplicate_score(a: Person, b: Person) -> float:
     """
     Retourne un score 0-1 indiquant la probabilité que deux personnes soient
@@ -538,6 +587,15 @@ async def detect_duplicates(
     )
     persons = persons_result.scalars().all()
 
+    # Relations de l'arbre : servent a ecarter les faux doublons. Deux fiches qui
+    # ont des parents / enfants / freres-soeurs RENSEIGNES mais DIFFERENTS ne
+    # peuvent pas etre la meme personne — elles partagent juste le meme nom.
+    rels_result = await db.execute(
+        select(Relationship).where(Relationship.family_tree_id == ctx.tree_id)
+    )
+    relationships = rels_result.scalars().all()
+    rel_sets = _build_relative_name_sets(persons, relationships)
+
     # Paires explicitement declarees "pas un doublon" par un membre de l'arbre :
     # partagees par tout l'arbre, on ne les represente plus a l'examen.
     ignored_result = await db.execute(
@@ -555,6 +613,8 @@ async def detect_duplicates(
                 if score >= 0.6:
                     a, b = persons[i], persons[j]
                     if _pair_key(a.id, b.id) in ignored_keys:
+                        continue
+                    if _relatives_contradict(rel_sets, a.id, b.id):
                         continue
                     pairs.append({
                         "person_a": {
@@ -667,6 +727,19 @@ async def auto_merge_duplicates(
     )
     persons = persons_result.scalars().all()
 
+    # Memes garde-fous que la detection : relations contradictoires + paires
+    # explicitement declarees "pas un doublon".
+    rels_result = await db.execute(
+        select(Relationship).where(Relationship.family_tree_id == ctx.tree_id)
+    )
+    rel_sets = _build_relative_name_sets(persons, rels_result.scalars().all())
+    ignored_result = await db.execute(
+        select(IgnoredDuplicate.person_low_id, IgnoredDuplicate.person_high_id).where(
+            IgnoredDuplicate.family_tree_id == ctx.tree_id
+        )
+    )
+    ignored_keys = {(str(low), str(high)) for low, high in ignored_result.all()}
+
     merged = []
     already_merged: set[str] = set()
 
@@ -677,6 +750,10 @@ async def auto_merge_duplicates(
                 continue
             score = _duplicate_score(a, b)
             if score < 0.85:
+                continue
+            if _pair_key(a.id, b.id) in ignored_keys:
+                continue
+            if _relatives_contradict(rel_sets, a.id, b.id):
                 continue
 
             def filled(p: Person) -> int:

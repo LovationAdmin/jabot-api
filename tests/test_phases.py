@@ -383,6 +383,54 @@ async def test_ignore_duplicate_is_tree_wide():
     print("  ✓ duplicate ignore is tree-wide and reversible")
 
 
+async def test_same_name_different_parents_not_duplicate():
+    """Two persons with the SAME name but DIFFERENT (non-empty) parents must not
+    be flagged as duplicates."""
+    await clean_db()
+    async with httpx.AsyncClient(base_url=BASE, timeout=20) as c:
+        ha = await auth_headers(c, PHONE_A)
+        ob = await c.post("/auth/onboard",
+            json={"first_name": "Root", "gender": "male"}, headers=ha)
+        tree = ob.json()["family_tree_id"]
+        th = {**ha, "X-Tree-ID": tree}
+
+        async def mk(fn, ln=None):
+            r = await c.post("/persons", json={"first_name": fn, "last_name": ln}, headers=th)
+            return r.json()["id"]
+
+        async def parent(parent_id, child_id):
+            r = await c.post("/tree/relationships",
+                json={"person_a_id": parent_id, "person_b_id": child_id, "type": "parent"},
+                headers=th)
+            assert r.status_code == 201, r.text
+
+        # Two "Awa" with different parents.
+        awa1 = await mk("Awa")
+        awa2 = await mk("Awa")
+        dad1 = await mk("Moussa")
+        dad2 = await mk("Ousmane")
+        await parent(dad1, awa1)
+        await parent(dad2, awa2)
+
+        d = await c.get("/tree/duplicates", headers=th)
+        assert d.status_code == 200, d.text
+        keys = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d.json()["duplicates"]}
+        assert tuple(sorted([awa1, awa2])) not in keys, "different parents → not a duplicate"
+
+        # Control: two "Bina" with a SHARED parent name still flagged.
+        bina1 = await mk("Bina")
+        bina2 = await mk("Bina")
+        shared = await mk("Kadi")
+        shared2 = await mk("Kadi")  # same name, entered twice
+        await parent(shared, bina1)
+        await parent(shared2, bina2)
+        d2 = await c.get("/tree/duplicates", headers=th)
+        keys2 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d2.json()["duplicates"]}
+        assert tuple(sorted([bina1, bina2])) in keys2, "shared parent name → still a candidate"
+
+    print("  ✓ same name + different parents is not a duplicate (shared parent still is)")
+
+
 async def main():
     print("Setting up…")
     await clean_db()
@@ -403,6 +451,9 @@ async def main():
 
     print("\n── Duplicates: tree-wide ignore ──")
     await test_ignore_duplicate_is_tree_wide()
+
+    print("\n── Duplicates: relationship-aware detection ──")
+    await test_same_name_different_parents_not_duplicate()
 
     print("\n✅ All tests passed")
 
