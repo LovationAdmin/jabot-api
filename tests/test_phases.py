@@ -339,6 +339,50 @@ async def test_convergence_requires_target_access():
     print("  ✓ convergence refused without target-tree access")
 
 
+async def test_ignore_duplicate_is_tree_wide():
+    """A duplicate pair ignored by one user no longer surfaces for ANOTHER user
+    of the same tree (shared, persistent across sessions)."""
+    await clean_db()
+    async with httpx.AsyncClient(base_url=BASE, timeout=20) as c:
+        # User A owns a tree with two near-identical persons (a likely duplicate).
+        ha = await auth_headers(c, PHONE_A)
+        ob = await c.post("/auth/onboard",
+            json={"first_name": "Fatou", "last_name": "Sow", "gender": "female"}, headers=ha)
+        tree = ob.json()["family_tree_id"]
+        th = {**ha, "X-Tree-ID": tree}
+
+        p1 = await c.post("/persons", json={"first_name": "Awa", "last_name": "Ba", "gender": "female"}, headers=th)
+        p2 = await c.post("/persons", json={"first_name": "Awa", "last_name": "Ba", "gender": "female"}, headers=th)
+        id1, id2 = p1.json()["id"], p2.json()["id"]
+
+        # The pair shows up as a duplicate.
+        d = await c.get("/tree/duplicates", headers=th)
+        assert d.status_code == 200, d.text
+        keys = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d.json()["duplicates"]}
+        assert tuple(sorted([id1, id2])) in keys, "pair should be detected"
+
+        # User A ignores the pair. Storage is keyed on tree_id only (no user/session),
+        # so the dismissal applies tree-wide.
+        ig = await c.post("/tree/duplicates/ignore",
+            json={"person_a_id": id1, "person_b_id": id2}, headers=th)
+        assert ig.status_code == 201, ig.text
+
+        # Re-detect as User A: pair gone.
+        d2 = await c.get("/tree/duplicates", headers=th)
+        keys2 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d2.json()["duplicates"]}
+        assert tuple(sorted([id1, id2])) not in keys2, "ignored pair must not resurface"
+
+        # Un-ignore brings it back.
+        un = await c.request("DELETE", "/tree/duplicates/ignore",
+            json={"person_a_id": id1, "person_b_id": id2}, headers=th)
+        assert un.status_code == 200, un.text
+        d3 = await c.get("/tree/duplicates", headers=th)
+        keys3 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d3.json()["duplicates"]}
+        assert tuple(sorted([id1, id2])) in keys3, "un-ignored pair should resurface"
+
+    print("  ✓ duplicate ignore is tree-wide and reversible")
+
+
 async def main():
     print("Setting up…")
     await clean_db()
@@ -356,6 +400,9 @@ async def main():
     print("\n── Phase 3: tree convergence ──")
     await test_tree_convergence()
     await test_convergence_requires_target_access()
+
+    print("\n── Duplicates: tree-wide ignore ──")
+    await test_ignore_duplicate_is_tree_wide()
 
     print("\n✅ All tests passed")
 

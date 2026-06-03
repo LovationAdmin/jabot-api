@@ -7,12 +7,14 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, func
+from pydantic import BaseModel
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.person import Person, CanvasPosition
 from app.models.relationship import Relationship
+from app.models.ignored_duplicate import IgnoredDuplicate
 from app.schemas.relationship import RelationshipCreate, RelationshipResponse
 from app.schemas.person import PersonResponse
 from app.middleware.auth import get_current_user, get_current_user_optional
@@ -480,6 +482,12 @@ def _name_similarity(a: Person, b: Person) -> float:
     return SequenceMatcher(None, full_a, full_b).ratio()
 
 
+def _pair_key(a_id, b_id) -> tuple:
+    """Cle normalisee (ordre stable) pour une paire de personnes."""
+    s = sorted([str(a_id), str(b_id)])
+    return (s[0], s[1])
+
+
 def _duplicate_score(a: Person, b: Person) -> float:
     """
     Retourne un score 0-1 indiquant la probabilité que deux personnes soient
@@ -530,6 +538,15 @@ async def detect_duplicates(
     )
     persons = persons_result.scalars().all()
 
+    # Paires explicitement declarees "pas un doublon" par un membre de l'arbre :
+    # partagees par tout l'arbre, on ne les represente plus a l'examen.
+    ignored_result = await db.execute(
+        select(IgnoredDuplicate.person_low_id, IgnoredDuplicate.person_high_id).where(
+            IgnoredDuplicate.family_tree_id == ctx.tree_id
+        )
+    )
+    ignored_keys = {(str(low), str(high)) for low, high in ignored_result.all()}
+
     def _compute_pairs() -> list:
         pairs = []
         for i in range(len(persons)):
@@ -537,6 +554,8 @@ async def detect_duplicates(
                 score = _duplicate_score(persons[i], persons[j])
                 if score >= 0.6:
                     a, b = persons[i], persons[j]
+                    if _pair_key(a.id, b.id) in ignored_keys:
+                        continue
                     pairs.append({
                         "person_a": {
                             "id": str(a.id),
@@ -560,6 +579,77 @@ async def detect_duplicates(
 
     pairs = await asyncio.to_thread(_compute_pairs)
     return {"duplicates": pairs, "total": len(pairs)}
+
+
+class IgnoreDuplicateRequest(BaseModel):
+    person_a_id: uuid.UUID
+    person_b_id: uuid.UUID
+
+
+@router.post("/duplicates/ignore", status_code=201)
+async def ignore_duplicate(
+    body: IgnoreDuplicateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
+):
+    """
+    Declare une paire comme n'etant PAS un doublon. L'ignore est partage par tout
+    l'arbre : la paire ne sera plus proposee a l'examen, peu importe l'utilisateur.
+    """
+    require_can_write(ctx)
+    if body.person_a_id == body.person_b_id:
+        raise HTTPException(status_code=400, detail="Les deux personnes sont identiques.")
+
+    # Les deux personnes doivent appartenir a l'arbre actif.
+    count = await db.execute(
+        select(func.count(Person.id)).where(
+            Person.id.in_([body.person_a_id, body.person_b_id]),
+            Person.family_tree_id == ctx.tree_id,
+            Person.deleted_at.is_(None),
+        )
+    )
+    if count.scalar() != 2:
+        raise HTTPException(status_code=404, detail="Personne introuvable dans cet arbre.")
+
+    low, high = _pair_key(body.person_a_id, body.person_b_id)
+    existing = await db.execute(
+        select(IgnoredDuplicate.id).where(
+            IgnoredDuplicate.family_tree_id == ctx.tree_id,
+            IgnoredDuplicate.person_low_id == low,
+            IgnoredDuplicate.person_high_id == high,
+        )
+    )
+    if existing.scalar() is None:
+        db.add(IgnoredDuplicate(
+            family_tree_id=ctx.tree_id,
+            person_low_id=low,
+            person_high_id=high,
+            ignored_by=current_user.id,
+        ))
+        await db.commit()
+    return {"ignored": True}
+
+
+@router.delete("/duplicates/ignore", status_code=200)
+async def unignore_duplicate(
+    body: IgnoreDuplicateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
+):
+    """Annule l'ignore d'une paire : elle pourra de nouveau remonter a l'examen."""
+    require_can_write(ctx)
+    low, high = _pair_key(body.person_a_id, body.person_b_id)
+    await db.execute(
+        IgnoredDuplicate.__table__.delete().where(
+            IgnoredDuplicate.family_tree_id == ctx.tree_id,
+            IgnoredDuplicate.person_low_id == low,
+            IgnoredDuplicate.person_high_id == high,
+        )
+    )
+    await db.commit()
+    return {"ignored": False}
 
 
 @router.post("/auto-merge-duplicates")
