@@ -428,7 +428,16 @@ async def test_same_name_different_parents_not_duplicate():
         keys2 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d2.json()["duplicates"]}
         assert tuple(sorted([bina1, bina2])) in keys2, "shared parent name → still a candidate"
 
-    print("  ✓ same name + different parents is not a duplicate (shared parent still is)")
+        # Tolerance : meme parent saisi avec une faute de frappe → toujours candidat.
+        cora1 = await mk("Cora")
+        cora2 = await mk("Cora")
+        await parent(await mk("Mamadou"), cora1)
+        await parent(await mk("Mamadu"), cora2)  # typo, same person
+        d3 = await c.get("/tree/duplicates", headers=th)
+        keys3 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d3.json()["duplicates"]}
+        assert tuple(sorted([cora1, cora2])) in keys3, "typo'd parent name → tolerated, still a candidate"
+
+    print("  ✓ same name + different parents not a duplicate (shared/typo parent still is)")
 
 
 async def main():

@@ -520,19 +520,32 @@ def _build_relative_name_sets(persons, relationships) -> dict:
     return sets
 
 
+_RELATIVE_SIM_THRESHOLD = 0.80
+
+
+def _names_match(a: str, b: str) -> bool:
+    """Deux noms de proches "matchent" s'ils sont assez proches (tolerance aux
+    fautes de frappe / variantes), via la meme mesure que les prenoms."""
+    if a == b:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= _RELATIVE_SIM_THRESHOLD
+
+
 def _relatives_contradict(rel_sets: dict, a_id, b_id) -> bool:
     """
     True si A et B ne peuvent PAS etre la meme personne : pour au moins une
     categorie (parents, enfants, fratrie), les deux ont des proches renseignes
-    mais AUCUN nom en commun.
+    mais AUCUN proche en commun — la comparaison tolere les petites variantes
+    d'orthographe (seuil de similarite), pour ne pas ecarter de vrais doublons
+    dont un meme proche aurait ete saisi avec une faute de frappe.
     """
     sa, sb = rel_sets.get(a_id), rel_sets.get(b_id)
     if not sa or not sb:
         return False
     for cat in ("parents", "children", "siblings"):
-        na = {n for n in sa[cat] if n}
-        nb = {n for n in sb[cat] if n}
-        if na and nb and na.isdisjoint(nb):
+        na = [n for n in sa[cat] if n]
+        nb = [n for n in sb[cat] if n]
+        if na and nb and not any(_names_match(x, y) for x in na for y in nb):
             return True
     return False
 
