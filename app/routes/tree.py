@@ -701,6 +701,19 @@ async def ignore_duplicate(
             ignored_by=current_user.id,
         ))
         await db.commit()
+        await write_audit(
+            db,
+            actor_user_id=current_user.id,
+            action="ignore_duplicate",
+            entity_type="person",
+            entity_id=low,
+            details={
+                "person_a_id": str(body.person_a_id),
+                "person_b_id": str(body.person_b_id),
+                "person_a_name": await _person_name(db, body.person_a_id),
+                "person_b_name": await _person_name(db, body.person_b_id),
+            },
+        )
     return {"ignored": True}
 
 
@@ -714,7 +727,7 @@ async def unignore_duplicate(
     """Annule l'ignore d'une paire : elle pourra de nouveau remonter a l'examen."""
     require_can_write(ctx)
     low, high = _pair_key(body.person_a_id, body.person_b_id)
-    await db.execute(
+    result = await db.execute(
         IgnoredDuplicate.__table__.delete().where(
             IgnoredDuplicate.family_tree_id == ctx.tree_id,
             IgnoredDuplicate.person_low_id == low,
@@ -722,6 +735,20 @@ async def unignore_duplicate(
         )
     )
     await db.commit()
+    if result.rowcount:
+        await write_audit(
+            db,
+            actor_user_id=current_user.id,
+            action="unignore_duplicate",
+            entity_type="person",
+            entity_id=low,
+            details={
+                "person_a_id": str(body.person_a_id),
+                "person_b_id": str(body.person_b_id),
+                "person_a_name": await _person_name(db, body.person_a_id),
+                "person_b_name": await _person_name(db, body.person_b_id),
+            },
+        )
     return {"ignored": False}
 
 

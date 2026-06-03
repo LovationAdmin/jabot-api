@@ -349,11 +349,15 @@ async def test_ignore_duplicate_is_tree_wide():
         ob = await c.post("/auth/onboard",
             json={"first_name": "Fatou", "last_name": "Sow", "gender": "female"}, headers=ha)
         tree = ob.json()["family_tree_id"]
+        fatou_id = ob.json()["id"]
         th = {**ha, "X-Tree-ID": tree}
 
         p1 = await c.post("/persons", json={"first_name": "Awa", "last_name": "Ba", "gender": "female"}, headers=th)
         p2 = await c.post("/persons", json={"first_name": "Awa", "last_name": "Ba", "gender": "female"}, headers=th)
         id1, id2 = p1.json()["id"], p2.json()["id"]
+        # Relie id1 a la personne onboardee pour qu'elle soit dans le journal scope.
+        await c.post("/tree/relationships",
+            json={"person_a_id": fatou_id, "person_b_id": id1, "type": "sibling"}, headers=th)
 
         # The pair shows up as a duplicate.
         d = await c.get("/tree/duplicates", headers=th)
@@ -380,7 +384,14 @@ async def test_ignore_duplicate_is_tree_wide():
         keys3 = {tuple(sorted([x["person_a"]["id"], x["person_b"]["id"]])) for x in d3.json()["duplicates"]}
         assert tuple(sorted([id1, id2])) in keys3, "un-ignored pair should resurface"
 
-    print("  ✓ duplicate ignore is tree-wide and reversible")
+        # Les actions ignore/un-ignore apparaissent dans le journal d'audit.
+        aud = await c.get("/audit/my-tree", headers=th)
+        assert aud.status_code == 200, aud.text
+        actions = [e["action"] for e in aud.json()["entries"]]
+        assert "ignore_duplicate" in actions, "ignore must be audited"
+        assert "unignore_duplicate" in actions, "un-ignore must be audited"
+
+    print("  ✓ duplicate ignore is tree-wide, reversible, and audited")
 
 
 async def test_same_name_different_parents_not_duplicate():

@@ -91,6 +91,12 @@ async def my_tree_audit(
             elif row.action == "merge_persons":
                 if str(details.get("source_id")) in component:
                     keep = True
+            elif row.action in ("ignore_duplicate", "unignore_duplicate"):
+                if (
+                    str(details.get("person_a_id")) in component
+                    or str(details.get("person_b_id")) in component
+                ):
+                    keep = True
         elif row.entity_type == "relationship":
             if (
                 str(details.get("person_a_id")) in component
