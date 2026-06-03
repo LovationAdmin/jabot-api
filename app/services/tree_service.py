@@ -549,6 +549,7 @@ async def merge_persons(
     db: AsyncSession,
     source_id: uuid.UUID,
     target_id: uuid.UUID,
+    commit: bool = True,
 ) -> Dict:
     """
     Merge source person into target person:
@@ -556,6 +557,9 @@ async def merge_persons(
     2. Transfer all relationships: replace source_id with target_id
     3. Transfer all media records
     4. Soft-delete the source person
+
+    Si `commit=False`, ne valide pas la transaction : l'appelant est responsable
+    du commit (utilisé par la convergence d'arbres pour rester atomique).
 
     Returns a summary dict.
     """
@@ -682,7 +686,8 @@ async def merge_persons(
     # Soft-delete source
     source.deleted_at = datetime.now(timezone.utc)
 
-    await db.commit()
+    if commit:
+        await db.commit()
 
     return {
         "message": "Fusion réussie",
@@ -692,4 +697,131 @@ async def merge_persons(
         "relationships_transferred": transferred_rels,
         "relationships_skipped": skipped_rels,
         "media_transferred": transferred_media,
+    }
+
+
+async def converge_trees(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    source_tree_id: uuid.UUID,
+    target_tree_id: uuid.UUID,
+    source_person_id: Optional[uuid.UUID],
+    target_person_id: Optional[uuid.UUID],
+) -> Dict:
+    """Fusionne (« convergence ») l'arbre source DANS l'arbre cible.
+
+    Cas d'usage : un utilisateur, visiteur invité dans l'arbre cible (sa vraie
+    famille), avait aussi démarré son propre arbre source lors de l'onboarding.
+    En découvrant sa fiche dans la cible, il rapatrie tout le contenu de son
+    arbre source dans la cible, fusionne sa fiche en double, et devient membre.
+
+    Stratégie (cf. analyse) : re-pointage en masse de `family_tree_id`
+    (persons, relationships, invitations) de source → cible, puis fusion du
+    SEUL nœud d'identité confirmé (la fiche de l'utilisateur). Les éventuels
+    doublons de proches restent des fiches distinctes, à fusionner manuellement
+    via l'outil de fusion existant — aucune fusion automatique hasardeuse.
+
+    Le tout dans UNE transaction (atomique). L'appelant gère cache/WS ensuite.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import update as _sql_update, func as _func
+    from app.models.family_tree import FamilyTree, UserTreeAccess
+    from app.models.invitation import Invitation
+    from app.services import tree_access_service
+
+    if source_tree_id == target_tree_id:
+        raise HTTPException(status_code=400, detail="Les arbres source et cible sont identiques.")
+
+    # ── Garde-fous d'autorisation ──────────────────────────────────────────
+    # 1. L'utilisateur doit être PROPRIÉTAIRE de l'arbre source.
+    src_role = await tree_access_service.get_role(db, user_id, source_tree_id)
+    if src_role != "owner":
+        raise HTTPException(status_code=403, detail="Vous devez être propriétaire de l'arbre source.")
+
+    # 2. L'utilisateur doit déjà avoir accès à l'arbre cible (ancre de confiance :
+    #    il y a été invité). On ne laisse personne déverser ses données dans un
+    #    arbre simplement trouvé via la recherche.
+    tgt_role = await tree_access_service.get_role(db, user_id, target_tree_id)
+    if tgt_role is None:
+        raise HTTPException(status_code=403, detail="Vous n'avez pas accès à l'arbre cible.")
+
+    # 3. L'arbre source ne doit avoir qu'un seul accès (l'utilisateur lui-même).
+    #    S'il a invité d'autres personnes, on refuse plutôt que de deviner.
+    count_access = (await db.execute(
+        select(_func.count()).select_from(UserTreeAccess).where(
+            UserTreeAccess.family_tree_id == source_tree_id
+        )
+    )).scalar_one()
+    if count_access > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="L'arbre source est partagé avec d'autres membres ; la convergence n'est pas possible automatiquement.",
+        )
+
+    # Vérifier que la cible existe.
+    target_tree = (await db.execute(
+        select(FamilyTree).where(FamilyTree.id == target_tree_id)
+    )).scalar_one_or_none()
+    if target_tree is None:
+        raise HTTPException(status_code=404, detail="Arbre cible introuvable.")
+    source_tree = (await db.execute(
+        select(FamilyTree).where(FamilyTree.id == source_tree_id)
+    )).scalar_one_or_none()
+    if source_tree is None:
+        raise HTTPException(status_code=404, detail="Arbre source introuvable.")
+
+    # Valider l'appartenance des fiches à leurs arbres respectifs (avant déplacement).
+    if source_person_id is not None:
+        sp = (await db.execute(
+            select(Person).where(Person.id == source_person_id, Person.deleted_at.is_(None))
+        )).scalar_one_or_none()
+        if sp is None or sp.family_tree_id != source_tree_id:
+            raise HTTPException(status_code=404, detail="Fiche source introuvable dans l'arbre source.")
+    if target_person_id is not None:
+        tp = (await db.execute(
+            select(Person).where(Person.id == target_person_id, Person.deleted_at.is_(None))
+        )).scalar_one_or_none()
+        if tp is None or tp.family_tree_id != target_tree_id:
+            raise HTTPException(status_code=404, detail="Fiche cible introuvable dans l'arbre cible.")
+
+    # ── Re-pointage en masse (UPDATE atomiques) ─────────────────────────────
+    moved_persons = (await db.execute(
+        _sql_update(Person)
+        .where(Person.family_tree_id == source_tree_id)
+        .values(family_tree_id=target_tree_id)
+    )).rowcount
+    (await db.execute(
+        _sql_update(Relationship)
+        .where(Relationship.family_tree_id == source_tree_id)
+        .values(family_tree_id=target_tree_id)
+    ))
+    (await db.execute(
+        _sql_update(Invitation)
+        .where(Invitation.family_tree_id == source_tree_id)
+        .values(family_tree_id=target_tree_id)
+    ))
+
+    # ── Fusion de l'unique nœud d'identité confirmé ─────────────────────────
+    merge_summary = None
+    if source_person_id and target_person_id and source_person_id != target_person_id:
+        merge_summary = await merge_persons(
+            db, source_id=source_person_id, target_id=target_person_id, commit=False
+        )
+
+    # ── Promotion de l'utilisateur : visiteur → membre de la cible ──────────
+    await tree_access_service.grant_access(db, user_id, target_tree_id, "member")
+
+    # ── Suppression de l'arbre source (vidé) ────────────────────────────────
+    # CASCADE retire les UserTreeAccess restants de l'arbre source.
+    await db.delete(source_tree)
+
+    await db.commit()
+
+    return {
+        "message": "Convergence réussie",
+        "source_tree_id": str(source_tree_id),
+        "target_tree_id": str(target_tree_id),
+        "persons_moved": moved_persons,
+        "identity_merged": merge_summary is not None,
+        "merge": merge_summary,
     }

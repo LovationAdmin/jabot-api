@@ -13,9 +13,10 @@ from app.middleware.auth import get_current_user
 from app.middleware.tree_context import get_active_tree, TreeContext, require_owner
 from app.schemas.tree_meta import (
     TreeListResponse, TreeAccessResponse, TreeCreateRequest, TreeRenameRequest,
-    TreeMemberResponse, MemberRoleUpdate,
+    TreeMemberResponse, MemberRoleUpdate, TreeConvergeRequest, TreeConvergeResponse,
 )
 from app.services import tree_access_service
+from app.services.tree_service import converge_trees
 from app.services.tree_cache import invalidate_tree_cache
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,38 @@ async def delete_tree(
     await db.delete(tree)
     await db.commit()
     await invalidate_tree_cache(str(tree_id))
+
+
+@router.post("/{target_tree_id}/converge", response_model=TreeConvergeResponse)
+async def converge_into_tree(
+    target_tree_id: uuid.UUID,
+    body: TreeConvergeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Convergence : rapatrie l'arbre source de l'appelant dans l'arbre cible.
+
+    Autorisation vérifiée dans le service : propriétaire de la source, accès à
+    la cible, source non partagée. Opération atomique.
+    """
+    result = await converge_trees(
+        db,
+        user_id=current_user.id,
+        source_tree_id=body.source_tree_id,
+        target_tree_id=target_tree_id,
+        source_person_id=body.source_person_id,
+        target_person_id=body.target_person_id,
+    )
+    # Les deux arbres ont changé : on purge leurs caches.
+    await invalidate_tree_cache(str(body.source_tree_id))
+    await invalidate_tree_cache(str(target_tree_id))
+    return TreeConvergeResponse(
+        message=result["message"],
+        source_tree_id=result["source_tree_id"],
+        target_tree_id=result["target_tree_id"],
+        persons_moved=result["persons_moved"],
+        identity_merged=result["identity_merged"],
+    )
 
 
 @router.get("/{tree_id}/members", response_model=list[TreeMemberResponse])

@@ -234,6 +234,111 @@ async def test_tree_switcher_me_returns_all_trees():
     print("  ✓ /me returns all tree accesses for tree switcher")
 
 
+# ─── Phase 3: tree convergence ─────────────────────────────────────────────
+
+
+async def test_tree_convergence():
+    """User U owns Tree B (onboarded solo) and is a visitor in Tree A (invited).
+    U converges: B's contents move into A, U's self-node merges, U becomes member,
+    Tree B disappears."""
+    U = "+2250700000010"
+    OWNER = "+2250700000011"
+    async with httpx.AsyncClient(base_url=BASE, timeout=20) as c:
+        # Owner builds Tree A with U's real fiche + a parent
+        ho = await auth_headers(c, OWNER)
+        oa = await c.post("/auth/onboard",
+            json={"first_name": "Sekou", "last_name": "Traoré", "gender": "male"}, headers=ho)
+        tree_a = oa.json()["family_tree_id"]
+        # U's real fiche already present in A
+        rp = await c.post("/persons",
+            json={"first_name": "Awa", "last_name": "Traoré", "gender": "female"},
+            headers={**ho, "X-Tree-ID": tree_a})
+        awa_in_a = rp.json()["id"]
+
+        # Owner invites U → U becomes visitor of A
+        inv = await c.post("/invitations/", json={"phone": U}, headers={**ho, "X-Tree-ID": tree_a})
+        assert inv.status_code in (200, 201), inv.text
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(
+                text("SELECT token, validation_code FROM invitations WHERE invited_phone=:p ORDER BY created_at DESC LIMIT 1"),
+                {"p": U})).fetchone()
+            token, code = row[0], row[1]
+
+        # U logs in, onboards into OWN tree B (no tree_id), then validates invite
+        hu = await auth_headers(c, U)
+        ob = await c.post("/auth/onboard",
+            json={"first_name": "Awa", "last_name": "Traoré", "gender": "female"}, headers=hu)
+        tree_b = ob.json()["family_tree_id"]
+        awa_in_b = ob.json()["id"]
+        # U adds a relative in B
+        rb = await c.post("/persons",
+            json={"first_name": "Cousin", "last_name": "Test", "gender": "male"},
+            headers={**hu, "X-Tree-ID": tree_b})
+        cousin_in_b = rb.json()["id"]
+
+        # U validates invitation (authenticated) → visitor of A
+        await c.post("/invitations/validate", json={"token": token, "code": str(code)}, headers=hu)
+
+        # Sanity: U now has 2 trees (owner of B, visitor of A)
+        me = await c.get("/auth/me", headers=hu)
+        accesses = {a["tree_id"]: a["role"] for a in me.json()["tree_accesses"]}
+        assert accesses.get(tree_b) == "owner", accesses
+        assert accesses.get(tree_a) == "visitor", accesses
+
+        # ── Converge B into A ──
+        cv = await c.post(f"/trees/{tree_a}/converge",
+            json={"source_tree_id": tree_b, "source_person_id": awa_in_b, "target_person_id": awa_in_a},
+            headers=hu)
+        assert cv.status_code == 200, cv.text
+        data = cv.json()
+        assert data["identity_merged"] is True, data
+        assert data["persons_moved"] >= 2, data  # Awa(B) + Cousin
+
+        # U now has ONLY tree A, as member
+        me2 = await c.get("/auth/me", headers=hu)
+        acc2 = {a["tree_id"]: a["role"] for a in me2.json()["tree_accesses"]}
+        assert tree_b not in acc2, f"Tree B should be gone: {acc2}"
+        assert acc2.get(tree_a) == "member", acc2
+        # U's fiche is now the one in A (merged)
+        assert me2.json()["person_id"] == awa_in_a, me2.json()
+
+        # The cousin from B now lives in A (read tree A persons)
+        persons = await c.get("/persons", headers={**hu, "X-Tree-ID": tree_a})
+        ids = {p["id"] for p in persons.json()["persons"]}
+        assert cousin_in_b in ids, f"Cousin not moved into A: {ids}"
+        assert awa_in_b not in ids, "Source self-node should be soft-deleted/merged"
+
+    print("  ✓ tree convergence: absorb + identity merge + promote + cleanup")
+
+
+async def test_convergence_requires_target_access():
+    """A user who only OWNS source but has no access to target cannot converge."""
+    U = "+2250700000012"
+    STRANGER = "+2250700000013"
+    async with httpx.AsyncClient(base_url=BASE, timeout=20) as c:
+        # Stranger owns tree A (U is NOT invited)
+        hs = await auth_headers(c, STRANGER)
+        sa = await c.post("/auth/onboard",
+            json={"first_name": "Stranger", "gender": "male"}, headers=hs)
+        tree_a = sa.json()["family_tree_id"]
+        target_person = sa.json()["id"]
+
+        # U owns tree B
+        hu = await auth_headers(c, U)
+        ub = await c.post("/auth/onboard",
+            json={"first_name": "Outsider", "gender": "male"}, headers=hu)
+        tree_b = ub.json()["family_tree_id"]
+        src_person = ub.json()["id"]
+
+        # U tries to converge into A without access → 403
+        cv = await c.post(f"/trees/{tree_a}/converge",
+            json={"source_tree_id": tree_b, "source_person_id": src_person, "target_person_id": target_person},
+            headers=hu)
+        assert cv.status_code == 403, f"Expected 403, got {cv.status_code}: {cv.text}"
+
+    print("  ✓ convergence refused without target-tree access")
+
+
 async def main():
     print("Setting up…")
     await clean_db()
@@ -247,6 +352,10 @@ async def main():
     await test_invitation_visitor_flow()
     await test_visitor_read_only()
     await test_tree_switcher_me_returns_all_trees()
+
+    print("\n── Phase 3: tree convergence ──")
+    await test_tree_convergence()
+    await test_convergence_requires_target_access()
 
     print("\n✅ All tests passed")
 
