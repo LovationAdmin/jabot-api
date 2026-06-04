@@ -13,7 +13,7 @@ from app.models.person import Person, CanvasPosition
 from app.models.media import Media
 from app.schemas.person import (
     PersonCreate, PersonUpdate, PersonResponse, PersonListResponse,
-    SearchRequest, SearchMatch,
+    SearchRequest, SearchMatch, CrossTreeSuggestionsResponse,
 )
 from app.middleware.auth import get_current_user, get_current_user_optional
 from app.middleware.tree_context import (
@@ -21,7 +21,7 @@ from app.middleware.tree_context import (
 )
 from app.services.ws_manager import manager as ws_manager
 from app.models.user import User
-from app.services.search_service import search_persons
+from app.services.search_service import search_persons, find_cross_tree_matches
 from app.services.audit_service import write_audit
 from app.services.tree_cache import invalidate_tree_cache
 
@@ -240,6 +240,37 @@ async def delete_person(
     )
     await invalidate_tree_cache(str(ctx.tree_id))
     await ws_manager.broadcast("person.deleted", {"person_id": str(person_id)}, str(current_user.id), tree_id=str(ctx.tree_id))
+
+
+@router.get("/{person_id}/cross-tree-suggestions", response_model=CrossTreeSuggestionsResponse)
+async def cross_tree_suggestions(
+    person_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    ctx: TreeContext = Depends(get_active_tree),
+):
+    """Cherche dans tous les autres arbres des fiches similaires à cette personne.
+
+    Déclenché après une création ou modification de fiche pour alerter l'utilisateur
+    qu'un proche existe peut-être dans un autre arbre de la plateforme.
+
+    Retourne au plus 5 correspondances (une par arbre), triées par confiance.
+    Seuil minimum : 50 %. Ne retourne rien pour les visiteurs (lecture seule).
+    """
+    if ctx.role not in ("owner", "member"):
+        return CrossTreeSuggestionsResponse(matches=[])
+
+    result = await db.execute(
+        select(Person)
+        .options(selectinload(Person.canvas_position), selectinload(Person.media))
+        .where(Person.id == person_id, Person.deleted_at.is_(None), Person.family_tree_id == ctx.tree_id)
+    )
+    person = result.scalar_one_or_none()
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personne introuvable")
+
+    matches = await find_cross_tree_matches(db, person, ctx.tree_id)
+    return CrossTreeSuggestionsResponse(matches=matches)
 
 
 @router.post("/search", response_model=List[SearchMatch])

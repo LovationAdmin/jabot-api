@@ -364,6 +364,123 @@ async def search_persons(
     return matches[:20]  # return top 20
 
 
+async def find_cross_tree_matches(
+    db: AsyncSession,
+    person: "Person",
+    current_tree_id,
+) -> list:
+    """
+    Recherche dans TOUS les autres arbres des fiches similaires à `person`.
+
+    Stratégie :
+    1. Récupère les parents/frères-sœurs de la personne dans son arbre (contexte)
+    2. Lance search_persons() — qui cherche déjà cross-arbre (pas de filtre tree_id)
+    3. Filtre pour exclure l'arbre courant
+    4. Retourne la meilleure correspondance par arbre, avec le nom de l'arbre
+
+    Seuil minimum : 0.50. Retourne au plus 5 arbres.
+    """
+    from app.models.relationship import Relationship as RelModel
+    from app.models.family_tree import FamilyTree
+    from app.schemas.person import CrossTreeMatch, SearchRequest as _SR
+
+    # ── Contexte familial immédiat ────────────────────────────────────────
+    rels_result = await db.execute(
+        select(RelModel).where(
+            RelModel.family_tree_id == current_tree_id,
+            or_(RelModel.person_a_id == person.id, RelModel.person_b_id == person.id),
+        )
+    )
+    rels = rels_result.scalars().all()
+
+    parent_ids, sibling_ids = [], []
+    for r in rels:
+        if r.type == "parent" and r.person_b_id == person.id:
+            parent_ids.append(r.person_a_id)
+        elif r.type == "child" and r.person_a_id == person.id:
+            parent_ids.append(r.person_b_id)
+        elif r.type in ("sibling", "half_sibling", "step_sibling"):
+            other = r.person_b_id if r.person_a_id == person.id else r.person_a_id
+            sibling_ids.append(other)
+
+    context_persons = {}
+    all_ctx_ids = list(set(parent_ids + sibling_ids))
+    if all_ctx_ids:
+        ctx_rows = (await db.execute(
+            select(Person).where(Person.id.in_(all_ctx_ids), Person.deleted_at.is_(None))
+        )).scalars().all()
+        context_persons = {p.id: p for p in ctx_rows}
+
+    parent_names = [
+        context_persons[pid].first_name
+        for pid in parent_ids if pid in context_persons
+    ]
+    sibling_names = [
+        context_persons[sid].first_name
+        for sid in sibling_ids if sid in context_persons
+    ]
+
+    # ── Recherche cross-arbre ──────────────────────────────────────────────
+    req = _SR(
+        name=person.first_name,
+        parent_names=parent_names or None,
+        sibling_names=sibling_names or None,
+        city_of_origin=person.city_of_origin,
+    )
+    matches = await search_persons(db, req)
+
+    # ── Filtre + regroupement par arbre ───────────────────────────────────
+    str_tree = str(current_tree_id)
+    pid_list = [
+        m.person.family_tree_id
+        for m in matches
+        if m.confidence >= 0.50 and str(m.person.family_tree_id) != str_tree
+    ]
+    if not pid_list:
+        return []
+
+    # Noms des arbres en une requête
+    tree_ids_needed = list({str(ft) for ft in pid_list if ft})
+    import uuid as _uuid
+    tree_uuid_list = []
+    for tid in tree_ids_needed:
+        try:
+            tree_uuid_list.append(_uuid.UUID(str(tid)))
+        except ValueError:
+            pass
+
+    tree_names: dict = {}
+    if tree_uuid_list:
+        tn_rows = (await db.execute(
+            select(FamilyTree.id, FamilyTree.name).where(FamilyTree.id.in_(tree_uuid_list))
+        )).all()
+        tree_names = {str(tid): name for tid, name in tn_rows}
+
+    # Meilleure correspondance par arbre
+    best_per_tree: dict[str, CrossTreeMatch] = {}
+    for m in matches:
+        if m.confidence < 0.50:
+            continue
+        tid = str(m.person.family_tree_id)
+        if tid == str_tree:
+            continue
+        if tid in best_per_tree and best_per_tree[tid].confidence >= m.confidence:
+            continue
+        best_per_tree[tid] = CrossTreeMatch(
+            tree_id=tid,
+            tree_name=tree_names.get(tid, "Arbre"),
+            person_id=str(m.person.id),
+            first_name=m.person.first_name,
+            last_name=m.person.last_name,
+            birth_date=m.person.birth_date,
+            confidence=round(m.confidence, 2),
+            match_reasons=m.match_reasons[:3],
+        )
+
+    ordered = sorted(best_per_tree.values(), key=lambda x: x.confidence, reverse=True)
+    return ordered[:5]
+
+
 async def _family_context_boost(
     db: AsyncSession,
     person: Person,
