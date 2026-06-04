@@ -43,16 +43,18 @@ _LNAME_REJECT = 0.50
 # ---------------------------------------------------------------------------
 
 class _FamilyMap:
-    """Pre-computed parent/sibling/spouse sets by person_id for a tree."""
+    """Pre-computed parent/sibling/uncle_aunt sets by person_id for a tree."""
     def __init__(
         self,
         parents: Dict[UUID, Set[UUID]],
         children: Dict[UUID, Set[UUID]],
         siblings: Dict[UUID, Set[UUID]],
+        uncles_aunts: Dict[UUID, Set[UUID]],
     ):
         self.parents = parents
         self.children = children
         self.siblings = siblings
+        self.uncles_aunts = uncles_aunts
 
 
 def _build_family_map(persons: List[Person], rels: List[Relationship]) -> _FamilyMap:
@@ -60,24 +62,40 @@ def _build_family_map(persons: List[Person], rels: List[Relationship]) -> _Famil
     parents: Dict[UUID, Set[UUID]] = {p.id: set() for p in persons}
     children: Dict[UUID, Set[UUID]] = {p.id: set() for p in persons}
     siblings: Dict[UUID, Set[UUID]] = {p.id: set() for p in persons}
+    uncles_aunts_direct: Dict[UUID, Set[UUID]] = {p.id: set() for p in persons}
+    spouses_of: Dict[UUID, Set[UUID]] = {p.id: set() for p in persons}
 
     for r in rels:
         a, b = r.person_a_id, r.person_b_id
         if a not in pid_set or b not in pid_set:
             continue
         if r.type == "parent":
-            # A is parent of B
             parents[b].add(a)
             children[a].add(b)
         elif r.type == "child":
-            # A is child of B
             parents[a].add(b)
             children[b].add(a)
         elif r.type in ("sibling", "half_sibling", "step_sibling"):
             siblings[a].add(b)
             siblings[b].add(a)
+        elif r.type == "uncle_aunt":
+            uncles_aunts_direct[b].add(a)   # A is uncle/aunt of B
+        elif r.type == "nephew_niece":
+            uncles_aunts_direct[a].add(b)   # B is uncle/aunt of A
+        elif r.type == "spouse":
+            spouses_of[a].add(b)
+            spouses_of[b].add(a)
 
-    return _FamilyMap(parents=parents, children=children, siblings=siblings)
+    # Expansion : spouse of an uncle/aunt is also an uncle/aunt (inference at query time)
+    uncles_aunts: Dict[UUID, Set[UUID]] = {}
+    for pid in pid_set:
+        direct = uncles_aunts_direct[pid]
+        expanded = set(direct)
+        for ua_id in direct:
+            expanded |= spouses_of.get(ua_id, set()) & pid_set
+        uncles_aunts[pid] = expanded
+
+    return _FamilyMap(parents=parents, children=children, siblings=siblings, uncles_aunts=uncles_aunts)
 
 
 def _cross_family_context(
@@ -90,42 +108,51 @@ def _cross_family_context(
 ) -> float:
     """
     Returns a value in [-0.5, 1.0]:
-    - Positive: their parents/siblings correspond well by name  → confidence boost
+    - Positive: their parents/siblings/oncles-tantes correspond well by name
     - Zero: no family context available in either tree
-    - Negative: both have parents that explicitly DON'T match    → penalty
+    - Negative: both have parents that explicitly DON'T match → penalty
+
+    Signal hierarchy (strongest → weakest):
+      1. Parents (weight 1.0)
+      2. Siblings (weight 0.5)
+      3. Oncles/tantes + leurs conjoints par alliance (weight 0.3)
     """
     sp_parent_ids = src_map.parents.get(sp.id, set())
     tp_parent_ids = tgt_map.parents.get(tp.id, set())
 
-    if not sp_parent_ids and not tp_parent_ids:
-        # Try siblings as a weaker signal
-        sp_sib_ids = src_map.siblings.get(sp.id, set())
-        tp_sib_ids = tgt_map.siblings.get(tp.id, set())
-        if not sp_sib_ids or not tp_sib_ids:
+    if sp_parent_ids and tp_parent_ids:
+        matched = _count_name_matches(sp_parent_ids, tp_parent_ids, src_persons, tgt_persons)
+        total = min(len(sp_parent_ids), len(tp_parent_ids))
+        if total == 0:
             return 0.0
+        if matched == 0:
+            return -0.5  # parents présents des deux côtés mais aucun ne correspond
+        return matched / total  # 0.0 – 1.0
+
+    if sp_parent_ids or tp_parent_ids:
+        return 0.0  # une seule fiche a des parents → pas de contexte comparable
+
+    # Pas de parents : essayer fratrie
+    sp_sib_ids = src_map.siblings.get(sp.id, set())
+    tp_sib_ids = tgt_map.siblings.get(tp.id, set())
+    if sp_sib_ids and tp_sib_ids:
         matched = _count_name_matches(sp_sib_ids, tp_sib_ids, src_persons, tgt_persons)
         total = min(len(sp_sib_ids), len(tp_sib_ids))
         if total == 0:
             return 0.0
-        ratio = matched / total
-        return ratio * 0.5  # siblings are weaker signal than parents
+        return (matched / total) * 0.5  # signal plus faible que les parents
 
-    if not sp_parent_ids or not tp_parent_ids:
-        return 0.0  # one side has no parent data → no context
+    # Pas de parents ni fratrie : essayer oncles/tantes (+ conjoints par alliance)
+    sp_ua_ids = src_map.uncles_aunts.get(sp.id, set())
+    tp_ua_ids = tgt_map.uncles_aunts.get(tp.id, set())
+    if sp_ua_ids and tp_ua_ids:
+        matched = _count_name_matches(sp_ua_ids, tp_ua_ids, src_persons, tgt_persons)
+        total = min(len(sp_ua_ids), len(tp_ua_ids))
+        if total == 0:
+            return 0.0
+        return (matched / total) * 0.3  # signal tertiaire
 
-    matched = _count_name_matches(sp_parent_ids, tp_parent_ids, src_persons, tgt_persons)
-    total = min(len(sp_parent_ids), len(tp_parent_ids))
-
-    if total == 0:
-        return 0.0
-
-    ratio = matched / total
-
-    # Both have parents but NONE match → probably different people
-    if matched == 0:
-        return -0.5
-
-    return ratio  # 0.0 – 1.0
+    return 0.0
 
 
 def _count_name_matches(

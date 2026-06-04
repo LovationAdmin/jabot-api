@@ -391,23 +391,49 @@ async def _family_context_boost(
         return 0.0
 
     # Collect related person IDs by type
-    related_ids_by_type: Dict[str, List] = {"parent": [], "sibling": [], "child": [], "spouse": []}
+    related_ids_by_type: Dict[str, List] = {
+        "parent": [], "sibling": [], "child": [], "spouse": [], "uncle_aunt": [],
+    }
     for r in rels:
         if r.person_a_id == person.id:
-            related_ids_by_type[r.type].append(r.person_b_id)
+            related_ids_by_type.setdefault(r.type, []).append(r.person_b_id)
         else:
-            # When this person is person_b, reverse parent/child
             rtype = r.type
             if rtype == "parent":
                 rtype = "child"
             elif rtype == "child":
                 rtype = "parent"
-            related_ids_by_type[rtype].append(r.person_a_id)
+            elif rtype == "nephew_niece":
+                rtype = "uncle_aunt"
+            elif rtype == "uncle_aunt":
+                rtype = "nephew_niece"
+            related_ids_by_type.setdefault(rtype, []).append(r.person_a_id)
 
     parent_ids = related_ids_by_type["parent"]
     sibling_ids = related_ids_by_type["sibling"]
 
-    related_ids = list(set(parent_ids + sibling_ids))
+    # Expansion oncles/tantes : leurs conjoints sont aussi oncles/tantes
+    uncle_aunt_ids_direct = set(related_ids_by_type.get("uncle_aunt", []))
+    spouse_ids = set(related_ids_by_type.get("spouse", []))
+    # Fetch spouses of uncles/aunts (need a second query)
+    if uncle_aunt_ids_direct:
+        ua_rels_result = await db.execute(
+            select(Relationship).where(
+                Relationship.type == "spouse",
+                or_(
+                    Relationship.person_a_id.in_(uncle_aunt_ids_direct),
+                    Relationship.person_b_id.in_(uncle_aunt_ids_direct),
+                ),
+            )
+        )
+        for ua_rel in ua_rels_result.scalars().all():
+            if ua_rel.person_a_id in uncle_aunt_ids_direct:
+                uncle_aunt_ids_direct.add(ua_rel.person_b_id)
+            else:
+                uncle_aunt_ids_direct.add(ua_rel.person_a_id)
+    uncle_aunt_ids = list(uncle_aunt_ids_direct)
+
+    related_ids = list(set(parent_ids + sibling_ids + uncle_aunt_ids))
     if not related_ids:
         return 0.0
 
