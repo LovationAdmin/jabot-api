@@ -14,9 +14,11 @@ from app.middleware.tree_context import get_active_tree, TreeContext, require_ow
 from app.schemas.tree_meta import (
     TreeListResponse, TreeAccessResponse, TreeCreateRequest, TreeRenameRequest,
     TreeMemberResponse, MemberRoleUpdate, TreeConvergeRequest, TreeConvergeResponse,
+    PreConvergeScanRequest, PreConvergeScanResponse,
 )
 from app.services import tree_access_service
 from app.services.tree_service import converge_trees
+from app.services.cross_tree_match_service import scan_cross_tree_matches
 from app.services.tree_cache import invalidate_tree_cache
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,30 @@ async def delete_tree(
     await invalidate_tree_cache(str(tree_id))
 
 
+@router.post("/{target_tree_id}/pre-converge-scan", response_model=PreConvergeScanResponse)
+async def pre_converge_scan(
+    target_tree_id: uuid.UUID,
+    body: PreConvergeScanRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Scan pré-convergence : détecte les fiches de l'arbre source qui correspondent
+    à des fiches de l'arbre cible, avant que l'utilisateur ne confirme la fusion.
+
+    L'utilisateur doit être propriétaire de l'arbre source et avoir accès à la cible.
+    """
+    from app.services import tree_access_service as _tac
+    src_role = await _tac.get_role(db, current_user.id, body.source_tree_id)
+    if src_role != "owner":
+        raise HTTPException(status_code=403, detail="Vous devez être propriétaire de l'arbre source.")
+    tgt_role = await _tac.get_role(db, current_user.id, target_tree_id)
+    if tgt_role is None:
+        raise HTTPException(status_code=403, detail="Vous n'avez pas accès à l'arbre cible.")
+
+    pairs, unmatched = await scan_cross_tree_matches(db, body.source_tree_id, target_tree_id)
+    return PreConvergeScanResponse(proposed_pairs=pairs, unmatched_source_count=unmatched)
+
+
 @router.post("/{target_tree_id}/converge", response_model=TreeConvergeResponse)
 async def converge_into_tree(
     target_tree_id: uuid.UUID,
@@ -96,6 +122,9 @@ async def converge_into_tree(
 
     Autorisation vérifiée dans le service : propriétaire de la source, accès à
     la cible, source non partagée. Opération atomique.
+
+    additional_merge_pairs : paires confirmées par l'utilisateur via le scan
+    pré-convergence (en plus de la fusion d'identité principale).
     """
     result = await converge_trees(
         db,
@@ -104,6 +133,10 @@ async def converge_into_tree(
         target_tree_id=target_tree_id,
         source_person_id=body.source_person_id,
         target_person_id=body.target_person_id,
+        additional_merge_pairs=[
+            {"source_person_id": p.source_person_id, "target_person_id": p.target_person_id}
+            for p in (body.additional_merge_pairs or [])
+        ],
     )
     # Les deux arbres ont changé : on purge leurs caches.
     await invalidate_tree_cache(str(body.source_tree_id))
@@ -114,6 +147,7 @@ async def converge_into_tree(
         target_tree_id=result["target_tree_id"],
         persons_moved=result["persons_moved"],
         identity_merged=result["identity_merged"],
+        additional_merges=result.get("additional_merges", 0),
     )
 
 

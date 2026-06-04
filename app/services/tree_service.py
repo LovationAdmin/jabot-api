@@ -716,6 +716,7 @@ async def converge_trees(
     target_tree_id: uuid.UUID,
     source_person_id: Optional[uuid.UUID],
     target_person_id: Optional[uuid.UUID],
+    additional_merge_pairs: Optional[List[Dict]] = None,
 ) -> Dict:
     """Fusionne (« convergence ») l'arbre source DANS l'arbre cible.
 
@@ -817,6 +818,31 @@ async def converge_trees(
             db, source_id=source_person_id, target_id=target_person_id, commit=False
         )
 
+    # ── Fusions supplémentaires confirmées par l'utilisateur ─────────────────
+    # Les fiches ont déjà été re-pointées vers target_tree_id, donc merge_persons
+    # peut les trouver normalement. On collecte les erreurs sans interrompre.
+    additional_merges = 0
+    already_merged_targets = {target_person_id} if target_person_id else set()
+
+    for pair in (additional_merge_pairs or []):
+        src_pid = pair.get("source_person_id") if isinstance(pair, dict) else pair.source_person_id
+        tgt_pid = pair.get("target_person_id") if isinstance(pair, dict) else pair.target_person_id
+        if not src_pid or not tgt_pid:
+            continue
+        if src_pid == source_person_id:
+            # Already handled as identity merge above
+            continue
+        if tgt_pid in already_merged_targets:
+            # Prevent two sources being merged into the same target in one pass
+            logger.warning("converge_trees: skipping duplicate target %s", tgt_pid)
+            continue
+        try:
+            await merge_persons(db, source_id=src_pid, target_id=tgt_pid, commit=False)
+            additional_merges += 1
+            already_merged_targets.add(tgt_pid)
+        except Exception as exc:
+            logger.warning("converge_trees: additional merge %s→%s failed: %s", src_pid, tgt_pid, exc)
+
     # ── Promotion de l'utilisateur : visiteur → membre de la cible ──────────
     await tree_access_service.grant_access(db, user_id, target_tree_id, "member")
 
@@ -832,5 +858,6 @@ async def converge_trees(
         "target_tree_id": str(target_tree_id),
         "persons_moved": moved_persons,
         "identity_merged": merge_summary is not None,
+        "additional_merges": additional_merges,
         "merge": merge_summary,
     }
