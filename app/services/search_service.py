@@ -420,21 +420,42 @@ async def find_cross_tree_matches(
         for sid in sibling_ids if sid in context_persons
     ]
 
-    # ── Recherche cross-arbre ──────────────────────────────────────────────
-    req = _SR(
-        name=person.first_name,
-        parent_names=parent_names or None,
-        sibling_names=sibling_names or None,
-        city_of_origin=person.city_of_origin,
-    )
-    matches = await search_persons(db, req)
+    # ── Recherche cross-arbre (tolérance élargie) ─────────────────────────
+    # On lance plusieurs passes (prénom, nom, surnoms) et on fusionne par meilleur score
+    _CROSS_TRGM_THRESHOLD = 0.25
+    _CROSS_MIN_CONFIDENCE = 0.35
+
+    search_terms = [person.first_name]
+    if person.last_name:
+        search_terms.append(person.last_name)
+    if person.nicknames:
+        search_terms.extend(person.nicknames)
+
+    all_matches: dict[str, "SearchMatch"] = {}  # person_id → best match
+
+    for term in search_terms:
+        req = _SR(
+            name=term,
+            parent_names=parent_names or None,
+            sibling_names=sibling_names or None,
+            city_of_origin=person.city_of_origin,
+        )
+        # Passe trigram avec seuil abaissé pour attraper les variantes phonétiques
+        trgm_hits = await _trigram_search(db, term, threshold=_CROSS_TRGM_THRESHOLD)
+        # On injecte les hits dans candidate_ids via search_persons normalement
+        for m in await search_persons(db, req):
+            pid = str(m.person.id)
+            if pid not in all_matches or all_matches[pid].confidence < m.confidence:
+                all_matches[pid] = m
+
+    matches = list(all_matches.values())
 
     # ── Filtre + regroupement par arbre ───────────────────────────────────
     str_tree = str(current_tree_id)
     pid_list = [
         m.person.family_tree_id
         for m in matches
-        if m.confidence >= 0.50 and str(m.person.family_tree_id) != str_tree
+        if m.confidence >= _CROSS_MIN_CONFIDENCE and str(m.person.family_tree_id) != str_tree
     ]
     if not pid_list:
         return []
@@ -459,7 +480,7 @@ async def find_cross_tree_matches(
     # Meilleure correspondance par arbre
     best_per_tree: dict[str, CrossTreeMatch] = {}
     for m in matches:
-        if m.confidence < 0.50:
+        if m.confidence < _CROSS_MIN_CONFIDENCE:
             continue
         tid = str(m.person.family_tree_id)
         if tid == str_tree:
