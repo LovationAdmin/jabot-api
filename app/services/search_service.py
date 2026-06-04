@@ -234,6 +234,7 @@ async def _trigram_search(
 async def search_persons(
     db: AsyncSession,
     req: SearchRequest,
+    trigram_threshold: float = 0.3,
 ) -> List[SearchMatch]:
     """
     Main search entry point.
@@ -245,12 +246,12 @@ async def search_persons(
     candidate_ids: Dict[str, float] = {}  # id → best trgm score
 
     if req.name:
-        trgm_hits = await _trigram_search(db, req.name)
+        trgm_hits = await _trigram_search(db, req.name, threshold=trigram_threshold)
         for pid, score in trgm_hits:
             candidate_ids[pid] = max(candidate_ids.get(pid, 0), score)
 
     if req.nickname:
-        trgm_hits = await _trigram_search(db, req.nickname)
+        trgm_hits = await _trigram_search(db, req.nickname, threshold=trigram_threshold)
         for pid, score in trgm_hits:
             candidate_ids[pid] = max(candidate_ids.get(pid, 0), score * 0.9)
 
@@ -378,7 +379,7 @@ async def find_cross_tree_matches(
     3. Filtre pour exclure l'arbre courant
     4. Retourne la meilleure correspondance par arbre, avec le nom de l'arbre
 
-    Seuil minimum : 0.50. Retourne au plus 5 arbres.
+    Seuil minimum : 0.35. Retourne au plus 5 arbres.
     """
     from app.models.relationship import Relationship as RelModel
     from app.models.family_tree import FamilyTree
@@ -441,9 +442,7 @@ async def find_cross_tree_matches(
             city_of_origin=person.city_of_origin,
         )
         # Passe trigram avec seuil abaissé pour attraper les variantes phonétiques
-        trgm_hits = await _trigram_search(db, term, threshold=_CROSS_TRGM_THRESHOLD)
-        # On injecte les hits dans candidate_ids via search_persons normalement
-        for m in await search_persons(db, req):
+        for m in await search_persons(db, req, trigram_threshold=_CROSS_TRGM_THRESHOLD):
             pid = str(m.person.id)
             if pid not in all_matches or all_matches[pid].confidence < m.confidence:
                 all_matches[pid] = m
@@ -552,7 +551,6 @@ async def _family_context_boost(
 
     # Expansion oncles/tantes : leurs conjoints sont aussi oncles/tantes
     uncle_aunt_ids_direct = set(related_ids_by_type.get("uncle_aunt", []))
-    spouse_ids = set(related_ids_by_type.get("spouse", []))
     # Fetch spouses of uncles/aunts (need a second query)
     if uncle_aunt_ids_direct:
         ua_rels_result = await db.execute(

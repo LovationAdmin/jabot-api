@@ -822,14 +822,16 @@ async def converge_trees(
     # Les fiches ont déjà été re-pointées vers target_tree_id, donc merge_persons
     # peut les trouver normalement. On collecte les erreurs sans interrompre.
     additional_merges = 0
-    already_merged_targets = {target_person_id} if target_person_id else set()
+    # Normalize to str for consistent comparison (pairs arrive as str, IDs as UUID)
+    source_person_id_str = str(source_person_id) if source_person_id else None
+    already_merged_targets: set = {str(target_person_id)} if target_person_id else set()
 
     for pair in (additional_merge_pairs or []):
-        src_pid = pair.get("source_person_id") if isinstance(pair, dict) else pair.source_person_id
-        tgt_pid = pair.get("target_person_id") if isinstance(pair, dict) else pair.target_person_id
+        src_pid = str(pair.get("source_person_id") if isinstance(pair, dict) else pair.source_person_id)
+        tgt_pid = str(pair.get("target_person_id") if isinstance(pair, dict) else pair.target_person_id)
         if not src_pid or not tgt_pid:
             continue
-        if src_pid == source_person_id:
+        if src_pid == source_person_id_str:
             # Already handled as identity merge above
             continue
         if tgt_pid in already_merged_targets:
