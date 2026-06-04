@@ -495,19 +495,27 @@ _SIBLING_TYPES = {"sibling", "half_sibling", "step_sibling"}
 def _build_relative_name_sets(persons, relationships) -> dict:
     """
     Pour chaque personne, construit les ensembles de NOMS normalises de ses
-    parents, enfants et freres/soeurs. On compare par nom (et non par id) afin
-    de ne pas ecarter de vrais doublons dont un meme proche aurait ete saisi
-    deux fois.
+    parents, enfants, freres/soeurs et oncles/tantes (y compris leurs conjoints,
+    qui sont culturellement aussi des oncles/tantes). On compare par nom (et non
+    par id) afin de ne pas ecarter de vrais doublons dont un meme proche aurait
+    ete saisi deux fois.
     """
     name_of = {p.id: _normalize(p.first_name or "") for p in persons}
-    sets = {p.id: {"parents": set(), "children": set(), "siblings": set()} for p in persons}
+    pid_set = set(name_of.keys())
+    sets = {
+        p.id: {"parents": set(), "children": set(), "siblings": set(), "uncles_aunts": set()}
+        for p in persons
+    }
+
+    # Collecte intermediaire des IDs directs oncles/tantes et conjoints
+    uncle_aunt_ids_of: dict = {p.id: set() for p in persons}
+    spouses_of: dict = {p.id: set() for p in persons}
 
     for r in relationships:
         a, b = r.person_a_id, r.person_b_id
         if a not in sets or b not in sets:
             continue
         if r.type in _PARENT_TYPES:
-            # person_a est le parent de person_b.
             sets[b]["parents"].add(name_of[a])
             sets[a]["children"].add(name_of[b])
         elif r.type == "child":
@@ -516,6 +524,21 @@ def _build_relative_name_sets(persons, relationships) -> dict:
         elif r.type in _SIBLING_TYPES:
             sets[a]["siblings"].add(name_of[b])
             sets[b]["siblings"].add(name_of[a])
+        elif r.type == "uncle_aunt":
+            uncle_aunt_ids_of[b].add(a)   # A est oncle/tante de B
+        elif r.type == "nephew_niece":
+            uncle_aunt_ids_of[a].add(b)   # B est oncle/tante de A
+        elif r.type == "spouse":
+            spouses_of[a].add(b)
+            spouses_of[b].add(a)
+
+    # Expansion : le conjoint d'un oncle/tante est aussi oncle/tante (inference)
+    for pid in pid_set:
+        direct = uncle_aunt_ids_of[pid]
+        expanded = set(direct)
+        for ua_id in direct:
+            expanded |= spouses_of.get(ua_id, set()) & pid_set
+        sets[pid]["uncles_aunts"] = {name_of[uid] for uid in expanded if uid in name_of}
 
     return sets
 
@@ -538,6 +561,10 @@ def _relatives_contradict(rel_sets: dict, a_id, b_id) -> bool:
     mais AUCUN proche en commun — la comparaison tolere les petites variantes
     d'orthographe (seuil de similarite), pour ne pas ecarter de vrais doublons
     dont un meme proche aurait ete saisi avec une faute de frappe.
+
+    Les oncles/tantes (y compris conjoints par alliance) sont aussi verifies,
+    mais seulement si les deux personnes en ont chacun au moins 2 (signal plus
+    faible que les parents — on evite les faux positifs).
     """
     sa, sb = rel_sets.get(a_id), rel_sets.get(b_id)
     if not sa or not sb:
@@ -546,6 +573,12 @@ def _relatives_contradict(rel_sets: dict, a_id, b_id) -> bool:
         na = [n for n in sa[cat] if n]
         nb = [n for n in sb[cat] if n]
         if na and nb and not any(_names_match(x, y) for x in na for y in nb):
+            return True
+    # Oncles/tantes : signal secondaire — exige ≥2 des deux cotés
+    ua_a = [n for n in sa.get("uncles_aunts", set()) if n]
+    ua_b = [n for n in sb.get("uncles_aunts", set()) if n]
+    if len(ua_a) >= 2 and len(ua_b) >= 2:
+        if not any(_names_match(x, y) for x in ua_a for y in ua_b):
             return True
     return False
 
