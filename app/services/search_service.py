@@ -450,6 +450,35 @@ async def find_cross_tree_matches(
     matches = list(all_matches.values())
 
     # ── Filtre + regroupement par arbre ───────────────────────────────────
+    # Filtre dur sur le prénom : un candidat dont le prénom n'a aucune
+    # similarité avec le prénom de la personne est écarté même si le nom de
+    # famille ou la ville matchent. Évite les faux positifs de type
+    # "Mamadou Diallo" proposé pour "Fatou Diallo".
+    _FNAME_MIN = 0.35
+    def _fname_sim(a: str, b: str) -> float:
+        na, nb = normalize_name(a), normalize_name(b)
+        if na == nb:
+            return 1.0
+        if na.startswith(nb) or nb.startswith(na):
+            return 0.7
+        if names_in_same_group(na, nb):
+            return 0.8
+        ph = phonetic_similarity(na, nb)
+        if ph > 0.5:
+            return ph
+        try:
+            return jellyfish.jaro_winkler_similarity(na, nb)
+        except Exception:
+            return 0.0
+
+    query_fname = person.first_name
+    filtered_matches = []
+    for m in matches:
+        fs = _fname_sim(query_fname, m.person.first_name)
+        if fs >= _FNAME_MIN:
+            filtered_matches.append(m)
+    matches = filtered_matches
+
     str_tree = str(current_tree_id)
     pid_list = [
         m.person.family_tree_id
