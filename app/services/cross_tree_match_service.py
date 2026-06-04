@@ -127,7 +127,7 @@ def _cross_family_context(
             return 0.0
         if matched == 0:
             return -0.5  # parents présents des deux côtés mais aucun ne correspond
-        return matched / total  # 0.0 – 1.0
+        return min(matched / total, 1.0)  # borné à 1.0 même si matched > total
 
     if sp_parent_ids or tp_parent_ids:
         return 0.0  # une seule fiche a des parents → pas de contexte comparable
@@ -140,7 +140,7 @@ def _cross_family_context(
         total = min(len(sp_sib_ids), len(tp_sib_ids))
         if total == 0:
             return 0.0
-        return (matched / total) * 0.5  # signal plus faible que les parents
+        return min(matched / total, 1.0) * 0.5  # signal plus faible que les parents
 
     # Pas de parents ni fratrie : essayer oncles/tantes (+ conjoints par alliance)
     sp_ua_ids = src_map.uncles_aunts.get(sp.id, set())
@@ -150,7 +150,7 @@ def _cross_family_context(
         total = min(len(sp_ua_ids), len(tp_ua_ids))
         if total == 0:
             return 0.0
-        return (matched / total) * 0.3  # signal tertiaire
+        return min(matched / total, 1.0) * 0.3  # signal tertiaire
 
     return 0.0
 
