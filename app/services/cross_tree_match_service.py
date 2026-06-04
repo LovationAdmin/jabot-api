@@ -29,13 +29,13 @@ from app.services.search_service import compute_name_score, normalize_name
 logger = logging.getLogger(__name__)
 
 # Minimum confidence to include a pair in results
-_MIN_CONFIDENCE = 0.50
+_MIN_CONFIDENCE = 0.35
 
 # First-name score below this → no point scoring further
-_FNAME_GATE = 0.55
+_FNAME_GATE = 0.40
 
 # Last-name score below this when both names are present → penalise
-_LNAME_REJECT = 0.50
+_LNAME_REJECT = 0.35
 
 
 # ---------------------------------------------------------------------------
