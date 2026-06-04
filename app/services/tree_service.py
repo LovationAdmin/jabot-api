@@ -795,6 +795,9 @@ async def converge_trees(
             raise HTTPException(status_code=404, detail="Fiche cible introuvable dans l'arbre cible.")
 
     # ── Re-pointage en masse (UPDATE atomiques) ─────────────────────────────
+    from app.models.ignored_duplicate import IgnoredDuplicate
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
     moved_persons = (await db.execute(
         _sql_update(Person)
         .where(Person.family_tree_id == source_tree_id)
@@ -810,6 +813,25 @@ async def converge_trees(
         .where(Invitation.family_tree_id == source_tree_id)
         .values(family_tree_id=target_tree_id)
     ))
+
+    # ── Migration des doublons ignorés (source → cible) ─────────────────────
+    # Les IgnoredDuplicate sont liés à family_tree_id avec CASCADE. Si on ne les
+    # migre pas avant de supprimer l'arbre source, toutes les paires ignorées
+    # disparaissent et réapparaissent comme nouveaux doublons dans l'arbre cible.
+    src_ignored = (await db.execute(
+        select(IgnoredDuplicate).where(IgnoredDuplicate.family_tree_id == source_tree_id)
+    )).scalars().all()
+    for ig in src_ignored:
+        stmt = _pg_insert(IgnoredDuplicate).values(
+            id=uuid.uuid4(),
+            family_tree_id=target_tree_id,
+            person_low_id=ig.person_low_id,
+            person_high_id=ig.person_high_id,
+            ignored_by=ig.ignored_by,
+        ).on_conflict_do_nothing(
+            constraint="uq_ignored_duplicate_pair"
+        )
+        await db.execute(stmt)
 
     # ── Fusion de l'unique nœud d'identité confirmé ─────────────────────────
     merge_summary = None
