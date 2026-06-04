@@ -156,6 +156,20 @@ async def list_pending_merge_requests(
     return [_to_response(r) for r in rows]
 
 
+@router.get("/mine", response_model=List[MergeRequestResponse])
+async def list_my_merge_requests(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retourne toutes les demandes soumises par l'utilisateur courant (tous statuts)."""
+    rows = (await db.execute(
+        select(TreeMergeRequest).where(
+            TreeMergeRequest.requested_by_user_id == current_user.id,
+        ).order_by(TreeMergeRequest.created_at.desc())
+    )).scalars().all()
+    return [_to_response(r) for r in rows]
+
+
 @router.post("/{request_id}/approve", response_model=MergeRequestResponse)
 async def approve_merge_request(
     request_id: uuid.UUID,
