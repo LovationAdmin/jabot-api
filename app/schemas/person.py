@@ -102,3 +102,19 @@ class SearchMatch(BaseModel):
     person: PersonResponse
     confidence: float
     match_reasons: List[str]
+
+
+class CrossTreeMatch(BaseModel):
+    """Une fiche dans un autre arbre qui ressemble à la fiche courante."""
+    tree_id: str
+    tree_name: str
+    person_id: str
+    first_name: str
+    last_name: Optional[str] = None
+    birth_date: Optional[date] = None
+    confidence: float
+    match_reasons: List[str]
+
+
+class CrossTreeSuggestionsResponse(BaseModel):
+    matches: List[CrossTreeMatch]
