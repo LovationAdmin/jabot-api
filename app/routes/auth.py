@@ -100,6 +100,19 @@ async def me(
 ):
     # Session glissante : on réémet un token frais à chaque appel /me.
     fresh_token = auth_service.create_access_token(str(current_user.id), current_user.phone)
+
+    # Vérifie que la fiche rattachée n'a pas été supprimée entre temps.
+    if current_user.person_id is not None:
+        check = await db.execute(
+            select(Person).where(
+                Person.id == current_user.person_id,
+                Person.deleted_at.is_(None),
+            )
+        )
+        if check.scalar_one_or_none() is None:
+            current_user.person_id = None
+            await db.commit()
+
     tree_accesses, active_tree_id = await _tree_state(db, current_user.id)
     return MeResponse(
         user_id=str(current_user.id),

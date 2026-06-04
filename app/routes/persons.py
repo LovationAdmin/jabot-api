@@ -218,6 +218,17 @@ async def delete_person(
 
     person.deleted_at = datetime.now(timezone.utc)
     details = {"first_name": person.first_name, "last_name": person.last_name}
+
+    # Si c'est la fiche rattachée à l'utilisateur courant (ou à n'importe quel
+    # utilisateur), on détache le lien pour qu'il puisse recréer une fiche.
+    from sqlalchemy import update as sa_update
+    from app.models.user import User as UserModel
+    await db.execute(
+        sa_update(UserModel)
+        .where(UserModel.person_id == person_id)
+        .values(person_id=None)
+    )
+
     await db.commit()
     await write_audit(
         db,
