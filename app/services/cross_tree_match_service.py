@@ -29,10 +29,10 @@ from app.services.search_service import compute_name_score, normalize_name
 logger = logging.getLogger(__name__)
 
 # Minimum confidence to include a pair in results
-_MIN_CONFIDENCE = 0.35
+_MIN_CONFIDENCE = 0.55  # was 0.35 — trop permissif avec les noms de famille partagés
 
 # First-name score below this → no point scoring further
-_FNAME_GATE = 0.40
+_FNAME_GATE = 0.55  # was 0.40 — "Moussa" vs "Mamadou" ≈ 0.55 JW, devait passer
 
 # Last-name score below this when both names are present → penalise
 _LNAME_REJECT = 0.35
@@ -209,11 +209,14 @@ def _progressive_score(
             # Last names diverge → very likely different people
             return fn_score * 0.15, reasons, "rejected"
         reasons.extend(ln_reasons)
-        base = fn_score * 0.45 + ln_score * 0.35
+        # Le prénom est le signal dominant. Le nom de famille confirme mais ne compense pas
+        # un prénom faible : en Afrique de l'Ouest les noms de clan sont partagés par des
+        # milliers de personnes (Diallo, Kouyaté, Traoré…).
+        base = fn_score * 0.70 + ln_score * 0.10  # was 0.45 + 0.35
         stage = "full_name"
     else:
         # One or both missing last names → rely more on first_name + context
-        base = fn_score * 0.45
+        base = fn_score * 0.60  # was 0.45
 
     # ── Stage 3: biographical boosts ─────────────────────────────────────
     bio = 0.0

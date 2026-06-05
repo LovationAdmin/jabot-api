@@ -423,8 +423,8 @@ async def find_cross_tree_matches(
 
     # ── Recherche cross-arbre (tolérance élargie) ─────────────────────────
     # On lance plusieurs passes (prénom, nom, surnoms) et on fusionne par meilleur score
-    _CROSS_TRGM_THRESHOLD = 0.25
-    _CROSS_MIN_CONFIDENCE = 0.35
+    _CROSS_TRGM_THRESHOLD = 0.30  # was 0.25 — trop large, trop de candidats sans rapport
+    _CROSS_MIN_CONFIDENCE = 0.55  # was 0.35 — seuil trop bas avec noms de famille partagés
 
     search_terms = [person.first_name]
     if person.last_name:
@@ -454,7 +454,7 @@ async def find_cross_tree_matches(
     # similarité avec le prénom de la personne est écarté même si le nom de
     # famille ou la ville matchent. Évite les faux positifs de type
     # "Mamadou Diallo" proposé pour "Fatou Diallo".
-    _FNAME_MIN = 0.35
+    _FNAME_MIN = 0.60  # was 0.35 — JW("fatou","mamadou")≈0.55 dépassait l'ancien seuil
     def _fname_sim(a: str, b: str) -> float:
         na, nb = normalize_name(a), normalize_name(b)
         if na == nb:
