@@ -213,7 +213,6 @@ async def approve_merge_request(
             target_tree_id=req.target_tree_id,
             source_person_id=req.source_person_id,
             target_person_id=req.target_person_id,
-            skip_permission_check=True,
         )
     except HTTPException as exc:
         raise exc

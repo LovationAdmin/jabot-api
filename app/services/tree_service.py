@@ -716,7 +716,6 @@ async def converge_trees(
     target_tree_id: uuid.UUID,
     source_person_id: Optional[uuid.UUID],
     target_person_id: Optional[uuid.UUID],
-    skip_permission_check: bool = False,
 ) -> Dict:
     """Fusionne (« convergence ») l'arbre source DANS l'arbre cible.
 
@@ -741,31 +740,6 @@ async def converge_trees(
 
     if source_tree_id == target_tree_id:
         raise HTTPException(status_code=400, detail="Les arbres source et cible sont identiques.")
-
-    # ── Garde-fous d'autorisation ──────────────────────────────────────────
-    # skip_permission_check=True est réservé à l'approbation d'une merge request,
-    # où les droits ont déjà été vérifiés par le route handler.
-    if not skip_permission_check:
-        src_role = await tree_access_service.get_role(db, user_id, source_tree_id)
-        if src_role != "owner":
-            raise HTTPException(status_code=403, detail="Vous devez être propriétaire de l'arbre source.")
-
-        tgt_role = await tree_access_service.get_role(db, user_id, target_tree_id)
-        if tgt_role is None:
-            raise HTTPException(status_code=403, detail="Vous n'avez pas accès à l'arbre cible.")
-
-    # 3. L'arbre source ne doit avoir qu'un seul accès (l'utilisateur lui-même).
-    #    S'il a invité d'autres personnes, on refuse plutôt que de deviner.
-    count_access = (await db.execute(
-        select(_func.count()).select_from(UserTreeAccess).where(
-            UserTreeAccess.family_tree_id == source_tree_id
-        )
-    )).scalar_one()
-    if count_access > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="L'arbre source est partagé avec d'autres membres ; la convergence n'est pas possible automatiquement.",
-        )
 
     # Vérifier que la cible existe.
     target_tree = (await db.execute(
