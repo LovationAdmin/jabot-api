@@ -110,3 +110,11 @@ class OnboardMatch(BaseModel):
 
 class OnboardSearchResponse(BaseModel):
     matches: list[OnboardMatch] = []
+
+
+class PhoneChangeRequest(BaseModel):
+    new_phone: str
+
+class PhoneChangeConfirm(BaseModel):
+    new_phone: str
+    code: str

@@ -11,6 +11,7 @@ from app.database import get_db
 from app.schemas.auth import (
     OTPRequest, OTPVerify, Token, MeResponse, LinkPersonRequest, TreeAccessItem,
     OnboardSearchRequest, OnboardSearchResponse, OnboardMatch, MatchRelative,
+    PhoneChangeRequest, PhoneChangeConfirm,
 )
 from app.schemas.person import PersonCreate, PersonResponse, SearchRequest
 from app.services import auth_service, sms_service, tree_access_service
@@ -252,6 +253,58 @@ async def onboard_search(
 
     ordered = sorted(best_per_tree.values(), key=lambda x: x.confidence, reverse=True)
     return OnboardSearchResponse(matches=ordered)
+
+
+@router.post("/request-phone-change", status_code=200)
+async def request_phone_change(
+    body: PhoneChangeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Envoie un OTP au nouveau numéro pour valider le changement."""
+    from app.security.crypto import phone_hash as ph_hash
+    existing = (await db.execute(
+        select(User).where(User.phone_hash == ph_hash(body.new_phone))
+    )).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Ce numéro est déjà associé à un autre compte.")
+
+    code = auth_service.generate_otp()
+    await auth_service.store_otp(body.new_phone, code)
+    sent = await sms_service.send_otp_sms(body.new_phone, code)
+
+    if settings.SMS_DEV_MODE:
+        logger.info(f"[SMS_DEV_MODE] Code OTP changement tél pour {body.new_phone}: {code}")
+        return {"message": "Mode dev : utilisez le code affiché", "dev_code": code}
+
+    if not sent:
+        raise HTTPException(status_code=503, detail="Impossible d'envoyer le SMS. Réessayez.")
+
+    return {"message": "Code OTP envoyé au nouveau numéro"}
+
+
+@router.post("/confirm-phone-change", status_code=200)
+async def confirm_phone_change(
+    body: PhoneChangeConfirm,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Valide l'OTP et met à jour le numéro de téléphone du compte."""
+    from app.security.crypto import phone_hash as ph_hash
+    valid = await auth_service.verify_otp(body.new_phone, body.code)
+    if not valid:
+        raise HTTPException(status_code=400, detail="Code OTP invalide ou expiré.")
+
+    existing = (await db.execute(
+        select(User).where(User.phone_hash == ph_hash(body.new_phone))
+    )).scalar_one_or_none()
+    if existing is not None and existing.id != current_user.id:
+        raise HTTPException(status_code=409, detail="Ce numéro est déjà associé à un autre compte.")
+
+    current_user.phone = body.new_phone
+    current_user.phone_hash = ph_hash(body.new_phone)
+    await db.commit()
+    return {"message": "Numéro mis à jour avec succès."}
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
