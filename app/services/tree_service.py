@@ -716,7 +716,6 @@ async def converge_trees(
     target_tree_id: uuid.UUID,
     source_person_id: Optional[uuid.UUID],
     target_person_id: Optional[uuid.UUID],
-    additional_merge_pairs: Optional[List[Dict]] = None,
     skip_permission_check: bool = False,
 ) -> Dict:
     """Fusionne (« convergence ») l'arbre source DANS l'arbre cible.
@@ -833,62 +832,22 @@ async def converge_trees(
         )
         await db.execute(stmt)
 
-    # ── Fusion de l'unique nœud d'identité confirmé ─────────────────────────
-    # Garde-fou critique : si la fiche CIBLE est déjà liée à un autre utilisateur
-    # (un user différent du demandeur), la fusionner ferait pointer deux comptes
-    # distincts vers la même fiche, mélangeant noms et numéros de téléphone.
-    # Dans ce cas on saute la fusion — les deux fiches coexistent dans l'arbre,
-    # à réconcilier manuellement via l'outil de fusion.
+    # ── Aucune fusion de fiches — toutes les fiches sont conservées ─────────
+    # La fusion d'arbres déplace les fiches sans jamais en supprimer.
+    # Les doublons éventuels sont signalés et traités manuellement via l'outil dédié.
+    # Repointer l'utilisateur vers sa fiche dans l'arbre cible si elle existe.
     from app.models.user import User as _UserModel
-    merge_summary = None
     if source_person_id and target_person_id and source_person_id != target_person_id:
         target_person_owner = (await db.execute(
             select(_UserModel.id).where(_UserModel.person_id == target_person_id)
         )).scalar_one_or_none()
-        identity_conflict = target_person_owner is not None and target_person_owner != user_id
-        if identity_conflict:
-            logger.warning(
-                "converge_trees: skipping identity merge %s→%s — target person belongs to another user (%s)",
-                source_person_id, target_person_id, target_person_owner,
+        # Si la fiche cible n'appartient à personne d'autre, repointer l'utilisateur vers elle
+        if target_person_owner is None:
+            await db.execute(
+                __import__("sqlalchemy").update(_UserModel)
+                .where(_UserModel.person_id == source_person_id)
+                .values(person_id=target_person_id)
             )
-        else:
-            merge_summary = await merge_persons(
-                db, source_id=source_person_id, target_id=target_person_id, commit=False
-            )
-
-    # ── Fusions supplémentaires confirmées par l'utilisateur ─────────────────
-    # Les fiches ont déjà été re-pointées vers target_tree_id, donc merge_persons
-    # peut les trouver normalement. On collecte les erreurs sans interrompre.
-    additional_merges = 0
-    # Normalize to str for consistent comparison (pairs arrive as str, IDs as UUID)
-    source_person_id_str = str(source_person_id) if source_person_id else None
-    already_merged_targets: set = {str(target_person_id)} if target_person_id else set()
-
-    for pair in (additional_merge_pairs or []):
-        src_pid = str(pair.get("source_person_id") if isinstance(pair, dict) else pair.source_person_id)
-        tgt_pid = str(pair.get("target_person_id") if isinstance(pair, dict) else pair.target_person_id)
-        if not src_pid or not tgt_pid:
-            continue
-        if src_pid == source_person_id_str:
-            # Already handled as identity merge above
-            continue
-        if tgt_pid in already_merged_targets:
-            # Prevent two sources being merged into the same target in one pass
-            logger.warning("converge_trees: skipping duplicate target %s", tgt_pid)
-            continue
-        try:
-            # Même garde-fou : ne pas fusionner si la fiche cible appartient à un autre user
-            tgt_owner = (await db.execute(
-                select(_UserModel.id).where(_UserModel.person_id == uuid.UUID(tgt_pid))
-            )).scalar_one_or_none()
-            if tgt_owner is not None and tgt_owner != user_id:
-                logger.warning("converge_trees: skipping additional merge %s→%s — target person belongs to another user", src_pid, tgt_pid)
-                continue
-            await merge_persons(db, source_id=src_pid, target_id=tgt_pid, commit=False)
-            additional_merges += 1
-            already_merged_targets.add(tgt_pid)
-        except Exception as exc:
-            logger.warning("converge_trees: additional merge %s→%s failed: %s", src_pid, tgt_pid, exc)
 
     # ── Promotion de l'utilisateur : visiteur → membre de la cible ──────────
     await tree_access_service.grant_access(db, user_id, target_tree_id, "member")
@@ -904,7 +863,4 @@ async def converge_trees(
         "source_tree_id": str(source_tree_id),
         "target_tree_id": str(target_tree_id),
         "persons_moved": moved_persons,
-        "identity_merged": merge_summary is not None,
-        "additional_merges": additional_merges,
-        "merge": merge_summary,
     }

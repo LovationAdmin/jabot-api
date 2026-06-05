@@ -133,10 +133,6 @@ async def converge_into_tree(
         target_tree_id=target_tree_id,
         source_person_id=body.source_person_id,
         target_person_id=body.target_person_id,
-        additional_merge_pairs=[
-            {"source_person_id": p.source_person_id, "target_person_id": p.target_person_id}
-            for p in (body.additional_merge_pairs or [])
-        ],
     )
     # Les deux arbres ont changé : on purge leurs caches.
     await invalidate_tree_cache(str(body.source_tree_id))
@@ -146,8 +142,8 @@ async def converge_into_tree(
         source_tree_id=result["source_tree_id"],
         target_tree_id=result["target_tree_id"],
         persons_moved=result["persons_moved"],
-        identity_merged=result["identity_merged"],
-        additional_merges=result.get("additional_merges", 0),
+        identity_merged=False,
+        additional_merges=0,
     )
 
 
