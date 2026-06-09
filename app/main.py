@@ -83,7 +83,17 @@ async def root():
 
 @app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
-    return {"status": "healthy"}
+    # État SMS exposé pour diagnostiquer la production sans accès aux logs :
+    #   "ok"          → clé Termii présente, envois réels actifs
+    #   "dev"         → SMS_DEV_MODE : aucun envoi réel, code dans la réponse
+    #   "missing_key" → TERMII_API_KEY absente : tout envoi échouera en 503
+    if settings.SMS_DEV_MODE:
+        sms = "dev"
+    elif settings.TERMII_API_KEY:
+        sms = "ok"
+    else:
+        sms = "missing_key"
+    return {"status": "healthy", "sms": sms}
 
 
 @app.exception_handler(Exception)
