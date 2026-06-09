@@ -65,11 +65,10 @@ services:
         sync: false
       - key: VONAGE_API_SECRET
         sync: false
-      # Invitations par SMS : OFF tant que le modèle de message (il contient
-      # un lien) n'a pas été approuvé dans le groupe de support Termii.
-      # L'OTP de connexion fonctionne indépendamment de ce flag.
+      # Invitations par SMS (lien + code), envoyées via la cascade Termii.
+      # Elles consomment le même quota que l'OTP : 2 SMS / numéro / 24 h.
       - key: INVITATION_ENABLED
-        value: "false"
+        value: "true"
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
