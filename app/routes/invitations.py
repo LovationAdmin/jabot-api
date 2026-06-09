@@ -4,10 +4,9 @@ Système d'invitation par SMS.
 INVITATION_ENABLED=False → le code est en place mais les invitations ne sont
 pas actives. Les endpoints retournent 503 si la fonctionnalité est désactivée.
 
-L'envoi passe par la cascade de fournisseurs de sms_service (Termii en tête)
-et consomme le quota Termii par numéro (sms_quota_service : 2 SMS / numéro /
-24 h). Si le SMS ne part pas, le lien + code sont retournés à l'inviteur pour
-un partage manuel (WhatsApp…).
+L'envoi passe par sms_service (Termii) et consomme le quota par numéro
+(sms_quota_service : 2 SMS / numéro / 24 h). Si le SMS ne part pas, le lien
++ code sont retournés à l'inviteur pour un partage manuel (WhatsApp…).
 """
 import uuid
 import secrets
@@ -76,9 +75,9 @@ class ValidateInvitationResponse(BaseModel):
 
 async def _send_invitation_sms(phone: str, token: str, code: str) -> bool:
     """
-    Envoie le SMS d'invitation via la cascade de fournisseurs (Termii en tête).
-    Retourne True si envoyé. Pas d'envoi réel si INVITATION_ENABLED=False ou
-    SMS_DEV_MODE=True : le code est alors exposé dans la réponse.
+    Envoie le SMS d'invitation via Termii. Retourne True si envoyé.
+    Pas d'envoi réel si INVITATION_ENABLED=False ou SMS_DEV_MODE=True :
+    le code est alors exposé dans la réponse.
     """
     if not settings.INVITATION_ENABLED or settings.SMS_DEV_MODE:
         logger.info(f"[DEV] Invitation SMS → {phone} | token={token[:8]}… | code={code}")
