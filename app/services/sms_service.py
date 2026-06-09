@@ -204,8 +204,10 @@ async def send_sms(phone: str, message: str) -> bool:
 
 
 async def send_otp_sms(phone: str, otp_code: str) -> bool:
+    # Libellé identique au usecase enregistré chez Termii pour le sender ID
+    # « Lovation » — ne pas le modifier sans mettre à jour l'enregistrement.
     message = (
-        f"Votre code de vérification JABOT : {otp_code}\n"
+        f"Votre code de vérification Lovation : {otp_code}. "
         f"Valable 10 minutes. Ne le partagez avec personne."
     )
     return await send_sms(phone, message)

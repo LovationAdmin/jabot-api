@@ -14,7 +14,7 @@ from app.schemas.auth import (
     PhoneChangeRequest, PhoneChangeConfirm,
 )
 from app.schemas.person import PersonCreate, PersonResponse, SearchRequest
-from app.services import auth_service, sms_service, tree_access_service
+from app.services import auth_service, sms_quota_service, sms_service, tree_access_service
 from app.services.search_service import search_persons
 from app.middleware.auth import get_current_user
 from app.models.user import User
@@ -46,6 +46,9 @@ async def _tree_state(db: AsyncSession, user_id: uuid.UUID) -> tuple[list[TreeAc
 
 @router.post("/request-otp", status_code=200)
 async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
+    # Quota Termii par numéro (max 2 SMS / numéro / 24 h) → 429 si dépassé.
+    await sms_quota_service.enforce(body.phone)
+
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.phone, code)
 
@@ -60,6 +63,9 @@ async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
         }
 
     if not sent:
+        # L'envoi a échoué : on rend le créneau pour que l'utilisateur puisse
+        # retenter sans avoir consommé son quota Termii.
+        await sms_quota_service.release_send(body.phone)
         logger.error(f"Echec d'envoi du SMS OTP a {body.phone}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -269,6 +275,8 @@ async def request_phone_change(
     if existing is not None:
         raise HTTPException(status_code=409, detail="Ce numéro est déjà associé à un autre compte.")
 
+    await sms_quota_service.enforce(body.new_phone)
+
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.new_phone, code)
     sent = await sms_service.send_otp_sms(body.new_phone, code)
@@ -278,6 +286,7 @@ async def request_phone_change(
         return {"message": "Mode dev : utilisez le code affiché", "dev_code": code}
 
     if not sent:
+        await sms_quota_service.release_send(body.new_phone)
         raise HTTPException(status_code=503, detail="Impossible d'envoyer le SMS. Réessayez.")
 
     return {"message": "Code OTP envoyé au nouveau numéro"}
