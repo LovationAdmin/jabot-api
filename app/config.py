@@ -73,10 +73,9 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
-    # Invitations
-    # Termii est opérationnel : activable en production. Avant d'activer,
-    # faire valider le modèle de SMS d'invitation (il contient un lien) dans
-    # le groupe de support Termii pour éviter un filtrage anti-spam.
+    # Invitations par SMS (lien + code) via la cascade fournisseurs.
+    # False par défaut (dev) ; activé en production via render.yaml.
+    # Les envois consomment le quota par numéro (2 SMS / 24 h).
     INVITATION_ENABLED: bool = False
 
     # App
