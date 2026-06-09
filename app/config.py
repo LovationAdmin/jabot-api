@@ -26,9 +26,11 @@ class Settings(BaseSettings):
     # utilisateur actif n'a jamais a refaire la validation OTP.
     ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
-    # ── Termii SMS (primary — Africa OTP specialist, Senegal + CI, ~$0.03-0.08)
+    # ── Termii SMS (primary — Africa OTP specialist, Senegal + France, ~$0.03-0.48)
     TERMII_API_KEY: str = ""
-    TERMII_SENDER_ID: str = "JABOT"  # max 11 chars, pre-approved by Termii
+    # Sender ID approuvé par Termii pour la route internationale France +
+    # Sénégal. Tout autre valeur sera rejetée/filtrée par leur plateforme.
+    TERMII_SENDER_ID: str = "Lovation"  # max 11 chars, pre-approved by Termii
 
     # ── Brevo (Sendinblue) SMS (secondary — cheapest for France/EU, ~€0.045)
     BREVO_API_KEY: str = ""
@@ -47,6 +49,14 @@ class Settings(BaseSettings):
     # SMS dev mode : si True, on n'appelle PAS le fournisseur SMS reel et on
     # expose toujours le code dans la reponse (dev_code).
     SMS_DEV_MODE: bool = False
+
+    # ── Quota SMS par numéro — exigence contractuelle Termii (route
+    #    internationale) : maximum 2 envois vers un même numéro par 24 h,
+    #    sinon le trafic est classé spam et FACTURÉ. Ne pas augmenter sans
+    #    accord écrit de Termii.
+    SMS_MAX_PER_PHONE_PER_DAY: int = 2
+    # Délai minimum (s) entre deux envois vers le même numéro (0 = désactivé).
+    SMS_PHONE_COOLDOWN_SECONDS: int = 60
 
     # Chiffrement applicatif des champs sensibles (téléphone, dates, ville).
     # ENCRYPTION_KEYS : une ou plusieurs clés Fernet (urlsafe base64, 32 octets)

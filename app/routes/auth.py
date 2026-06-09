@@ -14,7 +14,7 @@ from app.schemas.auth import (
     PhoneChangeRequest, PhoneChangeConfirm,
 )
 from app.schemas.person import PersonCreate, PersonResponse, SearchRequest
-from app.services import auth_service, sms_service, tree_access_service
+from app.services import auth_service, sms_quota_service, sms_service, tree_access_service
 from app.services.search_service import search_persons
 from app.middleware.auth import get_current_user
 from app.models.user import User
@@ -44,8 +44,43 @@ async def _tree_state(db: AsyncSession, user_id: uuid.UUID) -> tuple[list[TreeAc
     return items, active
 
 
+async def _enforce_sms_quota(phone: str) -> None:
+    """Applique le quota d'envoi par numéro (exigence Termii : max 2 SMS par
+    numéro et par 24 h, voir sms_quota_service). En mode dev aucun SMS réel
+    ne part, donc pas de quota."""
+    if settings.SMS_DEV_MODE:
+        return
+    decision = await sms_quota_service.reserve_send(phone)
+    if decision.allowed:
+        return
+    if decision.reason == "unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Impossible d'envoyer le SMS pour le moment. Réessayez dans un instant.",
+        )
+    if decision.reason == "cooldown":
+        detail = (
+            f"Un code vient d'être envoyé à ce numéro. "
+            f"Patientez {decision.retry_after} s avant d'en redemander un."
+        )
+    else:  # daily_limit
+        hours = max(1, -(-decision.retry_after // 3600))  # arrondi supérieur
+        detail = (
+            "Limite d'envois de SMS atteinte pour ce numéro. "
+            f"Réessayez dans environ {hours} h."
+        )
+    logger.info(f"429 quota SMS ({decision.reason}) retry_after={decision.retry_after}s")
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=detail,
+        headers={"Retry-After": str(decision.retry_after)},
+    )
+
+
 @router.post("/request-otp", status_code=200)
 async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
+    await _enforce_sms_quota(body.phone)
+
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.phone, code)
 
@@ -60,6 +95,9 @@ async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
         }
 
     if not sent:
+        # L'envoi a échoué : on rend le créneau pour que l'utilisateur puisse
+        # retenter sans avoir consommé son quota Termii.
+        await sms_quota_service.release_send(body.phone)
         logger.error(f"Echec d'envoi du SMS OTP a {body.phone}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -269,6 +307,8 @@ async def request_phone_change(
     if existing is not None:
         raise HTTPException(status_code=409, detail="Ce numéro est déjà associé à un autre compte.")
 
+    await _enforce_sms_quota(body.new_phone)
+
     code = auth_service.generate_otp()
     await auth_service.store_otp(body.new_phone, code)
     sent = await sms_service.send_otp_sms(body.new_phone, code)
@@ -278,6 +318,7 @@ async def request_phone_change(
         return {"message": "Mode dev : utilisez le code affiché", "dev_code": code}
 
     if not sent:
+        await sms_quota_service.release_send(body.new_phone)
         raise HTTPException(status_code=503, detail="Impossible d'envoyer le SMS. Réessayez.")
 
     return {"message": "Code OTP envoyé au nouveau numéro"}
