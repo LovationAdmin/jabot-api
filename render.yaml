@@ -43,19 +43,33 @@ services:
       # 2 workers uvicorn — isolent les uploads lourds du reste du trafic.
       - key: WEB_CONCURRENCY
         value: "2"
-      # SMS principal : Africa's Talking (fournisseur africain, bon marché).
-      # Définir dans le dashboard Render avec les credentials production.
+      # SMS principal : Termii — sender ID « Lovation » approuvé pour la
+      # route internationale France + Sénégal. Clé à définir dans le
+      # dashboard Render.
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        value: Lovation
+      # SMS de secours : Brevo (France/EU). Laisser vide pour désactiver.
+      - key: BREVO_API_KEY
+        sync: false
+      # 3e recours : Africa's Talking.
       - key: AFRICAS_TALKING_API_KEY
         sync: false
       - key: AFRICAS_TALKING_USERNAME
         sync: false
       - key: AFRICAS_TALKING_SENDER_ID
         value: JABOT
-      # SMS de secours : Vonage (laisser vide pour désactiver).
+      # Dernier recours : Vonage (laisser vide pour désactiver).
       - key: VONAGE_API_KEY
         sync: false
       - key: VONAGE_API_SECRET
         sync: false
+      # Invitations par SMS : OFF tant que le modèle de message (il contient
+      # un lien) n'a pas été approuvé dans le groupe de support Termii.
+      # L'OTP de connexion fonctionne indépendamment de ce flag.
+      - key: INVITATION_ENABLED
+        value: "false"
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
