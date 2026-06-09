@@ -26,25 +26,11 @@ class Settings(BaseSettings):
     # utilisateur actif n'a jamais a refaire la validation OTP.
     ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
-    # ── Termii SMS (primary — Africa OTP specialist, Senegal + France, ~$0.03-0.48)
+    # ── Termii SMS (fournisseur unique)
     TERMII_API_KEY: str = ""
     # Sender ID approuvé par Termii pour la route internationale France +
-    # Sénégal. Tout autre valeur sera rejetée/filtrée par leur plateforme.
+    # Sénégal. Toute autre valeur sera rejetée/filtrée par leur plateforme.
     TERMII_SENDER_ID: str = "Lovation"  # max 11 chars, pre-approved by Termii
-
-    # ── Brevo (Sendinblue) SMS (secondary — cheapest for France/EU, ~€0.045)
-    BREVO_API_KEY: str = ""
-    BREVO_SENDER: str = "JABOT"  # max 11 chars alphanumeric
-
-    # ── Africa's Talking SMS (kept as tertiary fallback)
-    AFRICAS_TALKING_API_KEY: str = ""
-    AFRICAS_TALKING_USERNAME: str = "sandbox"
-    AFRICAS_TALKING_SENDER_ID: str = "JABOT"
-
-    # ── Vonage SMS (last-resort fallback — laisser vide pour désactiver)
-    VONAGE_API_KEY: str = ""
-    VONAGE_API_SECRET: str = ""
-    VONAGE_BRAND_NAME: str = "JabotAI"
 
     # SMS dev mode : si True, on n'appelle PAS le fournisseur SMS reel et on
     # expose toujours le code dans la reponse (dev_code).
@@ -73,7 +59,7 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
-    # Invitations par SMS (lien + code) via la cascade fournisseurs.
+    # Invitations par SMS (lien + code) via Termii.
     # False par défaut (dev) ; activé en production via render.yaml.
     # Les envois consomment le quota par numéro (2 SMS / 24 h).
     INVITATION_ENABLED: bool = False
