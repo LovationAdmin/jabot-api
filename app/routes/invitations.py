@@ -3,7 +3,11 @@ Système d'invitation par SMS.
 
 INVITATION_ENABLED=False → le code est en place mais les invitations ne sont
 pas actives. Les endpoints retournent 503 si la fonctionnalité est désactivée.
-L'envoi SMS via Vonage est également conditionné par cette variable.
+
+L'envoi passe par la cascade de fournisseurs de sms_service (Termii en tête)
+et consomme le quota Termii par numéro (sms_quota_service : 2 SMS / numéro /
+24 h). Si le SMS ne part pas, le lien + code sont retournés à l'inviteur pour
+un partage manuel (WhatsApp…).
 """
 import uuid
 import secrets
@@ -22,7 +26,7 @@ from app.models.user import User
 from app.middleware.auth import get_current_user, get_current_user_optional
 from app.middleware.tree_context import get_active_tree, TreeContext, require_can_write
 from app.security.crypto import phone_hash
-from app.services import tree_access_service
+from app.services import sms_quota_service, sms_service, tree_access_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,9 @@ class CreateInvitationRequest(BaseModel):
 class CreateInvitationResponse(BaseModel):
     invitation_id: str
     token: str  # à intégrer dans le lien SMS
-    # En mode dev/SMS désactivé : code exposé pour tests
+    sms_sent: bool = False
+    # Code exposé quand le SMS n'est pas parti (mode dev, feature désactivée
+    # ou échec d'envoi) : l'inviteur le partage lui-même avec le lien.
     dev_code: Optional[str] = None
 
 
@@ -70,35 +76,20 @@ class ValidateInvitationResponse(BaseModel):
 
 async def _send_invitation_sms(phone: str, token: str, code: str) -> bool:
     """
-    Envoie le SMS d'invitation via Vonage. Retourne True si envoyé.
-    Désactivé si INVITATION_ENABLED=False ou SMS_DEV_MODE=True.
+    Envoie le SMS d'invitation via la cascade de fournisseurs (Termii en tête).
+    Retourne True si envoyé. Pas d'envoi réel si INVITATION_ENABLED=False ou
+    SMS_DEV_MODE=True : le code est alors exposé dans la réponse.
     """
     if not settings.INVITATION_ENABLED or settings.SMS_DEV_MODE:
         logger.info(f"[DEV] Invitation SMS → {phone} | token={token[:8]}… | code={code}")
         return False  # pas envoyé réellement
 
-    try:
-        import vonage  # type: ignore
-        client = vonage.Client(key=settings.VONAGE_API_KEY, secret=settings.VONAGE_API_SECRET)
-        sms = vonage.Sms(client)
-        invite_url = f"{settings.FRONTEND_URL}/invite?token={token}"
-        body = (
-            f"Vous êtes invité à consulter l'arbre Jabot.\n"
-            f"Votre code : {code}\n"
-            f"Lien : {invite_url}"
-        )
-        resp = sms.send_message({
-            "from": settings.VONAGE_BRAND_NAME,
-            "to": phone,
-            "text": body,
-        })
-        if resp["messages"][0]["status"] == "0":
-            return True
-        logger.warning(f"Vonage SMS failed: {resp}")
-        return False
-    except Exception as exc:
-        logger.error(f"Vonage SMS error: {exc}")
-        return False
+    invite_url = f"{settings.FRONTEND_URL}/invite?token={token}"
+    body = (
+        f"Lovation - Vous êtes invité(e) à découvrir l'arbre familial sur Jabotai.com. "
+        f"Code : {code}. Lien : {invite_url}"
+    )
+    return await sms_service.send_sms(phone, body)
 
 
 def _issue_visitor_cookie(response: Response, token: str) -> None:
@@ -133,6 +124,10 @@ async def create_invitation(
             detail="Le numéro doit être au format international (+33612…)",
         )
 
+    # Quota Termii par numéro (mêmes règles que l'OTP : 2 SMS / numéro / 24 h).
+    # Vérifié avant toute écriture ; rendu plus bas si l'envoi échoue.
+    await sms_quota_service.enforce(phone_clean)
+
     p_hash = phone_hash(phone_clean)
 
     # Revoke existing pending invitations for the same number
@@ -164,12 +159,17 @@ async def create_invitation(
 
     sms_sent = await _send_invitation_sms(phone_clean, token, code)
     inv.sms_sent = sms_sent
+    if not sms_sent and not settings.SMS_DEV_MODE:
+        # Envoi réel tenté mais échoué : on rend le créneau de quota.
+        await sms_quota_service.release_send(phone_clean)
 
     await db.commit()
     await db.refresh(inv)
 
-    resp = CreateInvitationResponse(invitation_id=str(inv.id), token=token)
-    if settings.SMS_DEV_MODE or not settings.INVITATION_ENABLED:
+    resp = CreateInvitationResponse(invitation_id=str(inv.id), token=token, sms_sent=sms_sent)
+    if not sms_sent:
+        # SMS non parti (dev, feature off ou échec) : l'inviteur partage le
+        # lien + code lui-même (WhatsApp…), l'invitation reste utilisable.
         resp.dev_code = code
     return resp
 

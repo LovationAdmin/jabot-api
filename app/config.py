@@ -74,7 +74,9 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
 
     # Invitations
-    # Mettre à True quand le fournisseur SMS production est opérationnel.
+    # Termii est opérationnel : activable en production. Avant d'activer,
+    # faire valider le modèle de SMS d'invitation (il contient un lien) dans
+    # le groupe de support Termii pour éviter un filtrage anti-spam.
     INVITATION_ENABLED: bool = False
 
     # App

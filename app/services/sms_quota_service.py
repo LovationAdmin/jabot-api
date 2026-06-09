@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass
 
 import redis.asyncio as aioredis
+from fastapi import HTTPException, status
 
 from app.config import settings
 from app.security.crypto import phone_hash
@@ -89,6 +90,42 @@ async def reserve_send(phone: str) -> QuotaDecision:
     except Exception as e:  # noqa: BLE001 — fail-closed volontaire
         logger.error(f"Quota SMS indisponible, envoi refusé: {e}")
         return QuotaDecision(False, 30, "unavailable")
+
+
+async def enforce(phone: str) -> None:
+    """Réserve un créneau d'envoi ou lève l'erreur HTTP appropriée (429/503).
+
+    À utiliser par tout endpoint qui envoie un SMS (OTP, invitation…).
+    En mode dev aucun SMS réel ne part → pas de quota. Si l'envoi échoue
+    ensuite chez le fournisseur, appeler release_send() pour rendre le créneau.
+    """
+    if settings.SMS_DEV_MODE:
+        return
+    decision = await reserve_send(phone)
+    if decision.allowed:
+        return
+    if decision.reason == "unavailable":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Impossible d'envoyer le SMS pour le moment. Réessayez dans un instant.",
+        )
+    if decision.reason == "cooldown":
+        detail = (
+            f"Un code vient d'être envoyé à ce numéro. "
+            f"Patientez {decision.retry_after} s avant d'en redemander un."
+        )
+    else:  # daily_limit
+        hours = max(1, -(-decision.retry_after // 3600))  # arrondi supérieur
+        detail = (
+            "Limite d'envois de SMS atteinte pour ce numéro. "
+            f"Réessayez dans environ {hours} h."
+        )
+    logger.info(f"429 quota SMS ({decision.reason}) retry_after={decision.retry_after}s")
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=detail,
+        headers={"Retry-After": str(decision.retry_after)},
+    )
 
 
 async def release_send(phone: str) -> None:

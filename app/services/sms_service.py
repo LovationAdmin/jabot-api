@@ -204,10 +204,10 @@ async def send_sms(phone: str, message: str) -> bool:
 
 
 async def send_otp_sms(phone: str, otp_code: str) -> bool:
-    # Le libellé doit rester cohérent avec le contenu déclaré à Termii lors
-    # de l'activation du sender ID « Lovation » (marque + site + validité).
+    # Libellé identique au usecase enregistré chez Termii pour le sender ID
+    # « Lovation » — ne pas le modifier sans mettre à jour l'enregistrement.
     message = (
-        f"Lovation - Votre code de validation pour Jabotai.com : {otp_code}\n"
+        f"Votre code de vérification Lovation : {otp_code}. "
         f"Valable 10 minutes. Ne le partagez avec personne."
     )
     return await send_sms(phone, message)
