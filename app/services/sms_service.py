@@ -21,6 +21,12 @@ def _normalize_e164(phone: str) -> str:
     return phone.replace(" ", "").replace("-", "")
 
 
+def _termii_format(phone: str) -> str:
+    """Format attendu par Termii : international SANS le « + »
+    (doc : « Example: 23490126727 »). Un « + » peut faire rejeter l'envoi."""
+    return _normalize_e164(phone).lstrip("+")
+
+
 async def _send_termii(phone: str, message: str) -> bool:
     """
     Termii generic SMS channel — sends our pre-generated codes.
@@ -28,7 +34,7 @@ async def _send_termii(phone: str, message: str) -> bool:
     """
     payload = {
         "api_key": settings.TERMII_API_KEY,
-        "to": _normalize_e164(phone),
+        "to": _termii_format(phone),
         "from": settings.TERMII_SENDER_ID,
         "sms": message,
         "type": "plain",
